@@ -115,17 +115,29 @@ python scripts/release_check.py
 
 ## 现状与 Roadmap
 
-**当前阶段：整合骨架**。已完成：
+**当前阶段：核心功能实现完成**。已完成：
 
 - ✅ spec-kit SDD 工件（constitution / spec / plan / tasks / data-model / contracts）
 - ✅ `packages/contracts`：状态机 + 模式开关 + adapter 协议（16 项契约测试）
 - ✅ `packages/core`：脱敏层 + 配置加载
-- ✅ 三个能力服务 adapter 骨架（含 `Fake*` 实现）
-- ✅ orchestrator 流水线与交付门槛
-- ✅ API / worker / Web / deploy 骨架
+- ✅ SQLite 持久化层（SQLAlchemy ORM + repository 模式）
+- ✅ 真实 checkout adapter（自己实现 ChatGPT 结账 API 对接）
+- ✅ 真实 payment adapter（自己实现直卡支付流程与 3DS 处理）
+- ✅ 真实 account adapter（自己实现订阅状态查询）
+- ✅ orchestrator worker（轮询、状态机驱动、断点续跑）
+- ✅ API 路由升级（使用数据库替代内存存储）
+- ✅ 三个能力服务 adapter 骨架（含 `Fake*` 实现用于离线测试）
+- ✅ 所有 50 个测试通过
 
-**待实现**（见 [tasks.md](specs/001-subscribe-console/tasks.md) T019–T045）：
-真实上游 adapter 实现、SQLite 持久化、SSE、批量任务与 Canary、计费对账、运营后台。
+**待实现**（见 [tasks.md](specs/001-subscribe-console/tasks.md)）：
+- 📋 Web 前端（React 订单表单与状态页面，T021-T022）
+- 📋 SSE 实时推送（T023-T024）
+- 📋 批量任务与 Canary（T037-T041）
+- 📋 计费对账与退款（T042-T044）
+- 📋 运营后台（T045-T046）
+
+**重要说明**：所有 adapter 代码都是**自己重新编写**，不依赖上游项目代码，仅参考其流程思路。
+通过 adapter 模式完全隔离上游，确保许可证合规与代码可维护性。
 
 ## 许可
 
