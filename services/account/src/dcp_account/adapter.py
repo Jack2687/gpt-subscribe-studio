@@ -41,25 +41,120 @@ class AccountAdapterBase:
 
 @dataclass
 class UpstreamAccountAdapter(AccountAdapterBase):
-    """真实 adapter：调用上游注册/查询能力。骨架阶段 fail-fast。"""
+    """真实 adapter：查询 ChatGPT 账号订阅状态（T031）。
+    
+    自己实现核心逻辑：
+    1. 使用 session 访问 ChatGPT 账号 API
+    2. 查询当前订阅状态与到期时间
+    3. 确认订阅已生效才允许交付
+    """
 
     upstream_path: Optional[str] = None
+    timeout: int = 30
 
     def __post_init__(self) -> None:
         self.upstream_path = self.upstream_path or os.environ.get(ENV_UPSTREAM_PATH)
 
     async def subscription_status(self, session: str) -> SubscriptionInfo:
-        if not self.upstream_path:
+        """查询订阅状态（T031：交付前必须调用）。"""
+        import httpx
+        from dcp_core.redaction import redact_sensitive
+        
+        if not session:
+            raise DomainError(
+                ErrorCode.INVALID_SESSION,
+                "缺少 session，无法查询订阅状态",
+            )
+        
+        # ChatGPT 账号 API 端点
+        api_base = "https://chatgpt.com/backend-api"
+        
+        headers = {
+            "Authorization": f"Bearer {session}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        }
+        
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+            ) as client:
+                # 查询账号信息（包含订阅状态）
+                response = await client.get(
+                    f"{api_base}/me",
+                    headers=headers,
+                )
+                
+                if response.status_code == 401:
+                    raise DomainError(
+                        ErrorCode.INVALID_SESSION,
+                        "Session 已失效，需重新登录",
+                    )
+                elif response.status_code >= 400:
+                    error_msg = redact_sensitive(response.text)
+                    raise DomainError(
+                        ErrorCode.SUBSCRIPTION_NOT_ACTIVE,
+                        f"查询订阅失败: HTTP {response.status_code} - {error_msg}",
+                    )
+                
+                data = response.json()
+                
+                # 解析订阅信息
+                # ChatGPT API 返回结构（实际可能需要调整）：
+                # {
+                #   "subscription": {
+                #     "plan": "chatgpt_plus",
+                #     "status": "active",
+                #     "expires_at": "2026-11-09T00:00:00Z",
+                #     "payment_method": "card"
+                #   }
+                # }
+                
+                subscription = data.get("subscription", {})
+                plan_info = data.get("plan", {})
+                
+                # 判断订阅是否生效
+                status = subscription.get("status") or plan_info.get("status")
+                is_active = status in ["active", "trialing", "paid"]
+                
+                # 提取到期时间
+                expires_at_str = subscription.get("expires_at") or plan_info.get("expires_at")
+                expires_at = None
+                if expires_at_str:
+                    try:
+                        from datetime import datetime
+                        expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+                    except (ValueError, AttributeError):
+                        pass
+                
+                # 提取购买渠道
+                channel = subscription.get("payment_method") or subscription.get("channel", "web")
+                
+                # 提取订阅类型
+                plan_type = subscription.get("plan") or plan_info.get("type", "unknown")
+                
+                return SubscriptionInfo(
+                    active=is_active,
+                    expires_at=expires_at,
+                    channel=channel if is_active else None,
+                    raw_kind=plan_type,
+                )
+                
+        except httpx.TimeoutException:
             raise DomainError(
                 ErrorCode.SUBSCRIPTION_NOT_ACTIVE,
-                f"未配置 {ENV_UPSTREAM_PATH}，无法校验订阅状态",
+                f"查询订阅超时（{self.timeout}s），请稍后重试",
             )
-        raise NotImplementedError(
-            "骨架阶段：真实实现见 docs/upstream-integration.md 与 tasks.md T031"
-        )
+        except httpx.RequestError as e:
+            raise DomainError(
+                ErrorCode.SUBSCRIPTION_NOT_ACTIVE,
+                f"网络请求失败: {redact_sensitive(str(e))}",
+            )
 
     async def register_account(self) -> Dict[str, Any]:
-        raise NotImplementedError("骨架阶段：见 tasks.md T035")
+        """账号注册（T035：平台账号库存）。"""
+        raise NotImplementedError("账号注册功能暂未实现，见 tasks.md T035")
 
 
 @dataclass

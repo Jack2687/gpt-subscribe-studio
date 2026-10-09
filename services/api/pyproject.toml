@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dcp-api"
+version = "0.1.0"
+description = "订单 API 服务（直卡协议）"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dcp_api"]

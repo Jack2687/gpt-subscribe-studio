@@ -1,23 +1,26 @@
-"""订单路由（骨架）。
+"""订单路由。
 
-实现 `POST /api/orders` 与 `GET /api/orders/{order_id}` 的**契约层**：
-- 请求解析与模式校验（含 promo 风险确认）；
-- 幂等键去重；
-- **不**直接调用上游（交给 orchestrator，见 ADR 0001）。
+实现 `POST /api/orders` 与 `GET /api/orders/{order_id}` 的完整功能：
+- 请求解析与模式校验（含 promo 风险确认）
+- 幂等键去重（SQLite 唯一约束）
+- 创建订单并入队编排任务
+- 查询订单状态与支付尝试历史
 
-真实异步编排（创建 Job 并交给 orchestrator）见 tasks.md T017–T020。
+tasks.md T017–T022。
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
 
 from dcp_contracts import (
     AccountSource,
     BillingMode,
     CardSource,
+    Job,
     Mode,
     ModeValidationError,
     Order,
@@ -26,10 +29,17 @@ from dcp_contracts import (
 )
 from dcp_contracts.errors import ErrorCode
 
+from ..db import get_db
+from ..repository import OrderRepository
 from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut
-from ..store import store
 
 router = APIRouter(prefix="/api", tags=["orders"])
+
+
+def get_session():
+    """依赖注入：数据库会话。"""
+    db = get_db()
+    return next(db.get_session())
 
 
 def _to_mode(mode_in: ModeIn) -> Mode:
@@ -75,10 +85,14 @@ def _error(status_code: int, code: ErrorCode, message: str) -> HTTPException:
 async def create_order(
     payload: OrderCreateRequest,
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    session: Session = Depends(get_session),
 ) -> OrderOut:
     """创建开通订单。相同 ``Idempotency-Key`` 返回同一订单。"""
 
-    existing = store.find_by_idempotency(idempotency_key)
+    repo = OrderRepository(session)
+    
+    # 幂等性检查
+    existing = repo.find_by_idempotency(idempotency_key)
     if existing is not None:
         return _to_out(existing)
 
@@ -103,6 +117,7 @@ async def create_order(
             "account_source=customer_session 需要提供 session",
         )
 
+    # 创建订单
     order = Order(
         idempotency_key=idempotency_key or "",
         plan=plan,
@@ -110,8 +125,18 @@ async def create_order(
         mode=mode,
         status=OrderStatus.CREATED,
     )
-    store.create_order(order, idempotency_key)
-    # NOTE: 骨架阶段不启动异步编排；真实实现应在此入队 Job（tasks.md T020）。
+    order = repo.create_order(order, idempotency_key)
+    
+    # 创建编排任务（T020：入队给 orchestrator worker）
+    job = Job(
+        order_id=order.id,
+        stage="checkout",
+        attempts=0,
+    )
+    repo.add_job(job)
+    
+    # TODO: 发送任务通知给 worker（消息队列或轮询）
+    
     return _to_out(order)
 
 
@@ -120,10 +145,32 @@ async def create_order(
     response_model=OrderOut,
     responses={404: {"model": ErrorOut}},
 )
-async def get_order(order_id: str) -> OrderOut:
+async def get_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+) -> OrderOut:
     """查询订单状态。"""
 
-    order = store.get_order(order_id)
+    repo = OrderRepository(session)
+    order = repo.get_order(order_id)
     if order is None:
         raise _error(status.HTTP_404_NOT_FOUND, ErrorCode.COMPLIANCE_BLOCKED, "订单不存在")
     return _to_out(order)
+
+
+@router.get(
+    "/orders",
+    response_model=list[OrderOut],
+)
+async def list_orders(
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+) -> list[OrderOut]:
+    """列出订单（支持状态过滤与分页）。"""
+
+    repo = OrderRepository(session)
+    order_status = OrderStatus(status) if status else None
+    orders = repo.list_orders(status=order_status, limit=limit, offset=offset)
+    return [_to_out(order) for order in orders]

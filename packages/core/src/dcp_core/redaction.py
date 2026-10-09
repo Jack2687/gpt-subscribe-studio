@@ -132,9 +132,14 @@ SENSITIVE_KEYS: Iterable[str] = (
 )
 
 
+# 别名：让代码更易读
+redact_sensitive = redact
+
+
 __all__ = [
     "MASK",
     "redact",
+    "redact_sensitive",
     "redact_mapping",
     "RedactingFilter",
     "install_logging_filter",

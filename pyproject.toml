@@ -4,7 +4,14 @@ version = "0.1.0"
 description = "自托管的 ChatGPT 订阅代开编排与交付平台"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.6",
+    "httpx>=0.26.0",
+]
 
 [tool.uv]
 # 根项目是「虚拟工作区」，不打包自身；各 service / package 独立成包。
