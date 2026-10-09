@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- Node / 前端 ----
+node_modules/
+.pnpm-store/
+apps/web/dist/
+*.tsbuildinfo
+
+# ---- 本地数据与凭证（宪法第 I 条：绝不入库）----
+runtime/
+sessions/
+credentials/
+*.session.json
+deploy/.env
+.env
+.env.local
+config.json
+proxy.json
+runtime.json
+payment.json
+standalone_config.json
+card_pool.local.json
+
+# ---- 上游引用（以 submodule 形式，不当普通目录提交）----
+vendor/upstream/*/
+!vendor/upstream/README.md
+
+# ---- 本机工具 ----
+reasonix.toml
+.reasonix/
+.uv-tools/
+.uv-bin/
+uv.lock
+.tmp/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db

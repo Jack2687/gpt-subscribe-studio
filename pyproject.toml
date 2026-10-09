@@ -1,0 +1,24 @@
+[project]
+name = "direct-card-protocol"
+version = "0.1.0"
+description = "自托管的 ChatGPT 订阅代开编排与交付平台"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.uv]
+# 根项目是「虚拟工作区」，不打包自身；各 service / package 独立成包。
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "packages/contracts/src",
+    "packages/core/src",
+    "services/account/src",
+    "services/checkout/src",
+    "services/payment/src",
+    "services/api/src",
+    "services/orchestrator/src",
+]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"

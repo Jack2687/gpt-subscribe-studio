@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dcp-contracts"
+version = "0.1.0"
+description = "共享契约：订单/支付状态机、领域模型、adapter 协议（直卡协议）"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dcp_contracts"]

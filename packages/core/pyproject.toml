@@ -1,0 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dcp-core"
+version = "0.1.0"
+description = "共享底座：脱敏日志、配置加载、传输工具（直卡协议）"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dcp_core"]

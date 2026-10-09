@@ -1,0 +1,42 @@
+# 直卡协议 —— 容器化自托管编排（ADR 0003）
+#
+#   cd deploy && cp .env.example .env && docker compose up -d --build
+#
+# 默认仅绑定回环地址；公网暴露必须经反向代理 + 鉴权。
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: direct-card-protocol/api:0.1.0
+    env_file: [.env]
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - dcp-data:/data
+      - dcp-config:/config
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: direct-card-protocol/api:0.1.0
+    command: ["python", "-m", "dcp_orchestrator.worker"]
+    env_file: [.env]
+    depends_on:
+      - api
+    volumes:
+      - dcp-data:/data
+      - dcp-config:/config
+    restart: unless-stopped
+
+  # 前端：开发期用 `pnpm dev`（apps/web）。生产可加一个静态托管服务 + 反代。
+  # web:
+  #   build: { context: ../apps/web, dockerfile: ../../deploy/Dockerfile.web }
+  #   ports: ["127.0.0.1:5173:80"]
+
+volumes:
+  dcp-data:
+  dcp-config:

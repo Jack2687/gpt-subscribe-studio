@@ -1,0 +1,210 @@
+openapi: 3.1.0
+
+info:
+  title: DirectCard Protocol API
+  version: 0.1.0
+  description: >
+    「直卡协议」订阅代开编排平台的 HTTP 契约。
+    所有接口默认仅对 loopback / 内网开放，公网暴露必须经反向代理 + 鉴权。
+    服务端**不接收**卡号、CVV、session 明文持久化内容。
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: 本地自托管（默认）
+
+tags:
+  - name: health
+  - name: orders
+
+paths:
+  /api/health:
+    get:
+      tags: [health]
+      summary: 健康检查
+      responses:
+        "200":
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                  version: { type: string }
+
+  /api/orders:
+    post:
+      tags: [orders]
+      summary: 创建开通订单
+      description: >
+        幂等：相同 `idempotency_key` 的重复提交返回同一订单。
+        `billing_mode=promo` 时必须携带 `risk_acknowledged=true`。
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCreateRequest"
+      responses:
+        "201":
+          description: 订单已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: 参数校验失败（如 promo 未确认风险）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: session 无效或已失效（语义化错误）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: 幂等键冲突且原订单仍在处理
+
+  /api/orders/{order_id}:
+    get:
+      tags: [orders]
+      summary: 查询订单状态
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 订单详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "404":
+          description: 订单不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/orders/{order_id}/events:
+    get:
+      tags: [orders]
+      summary: 订单状态事件流（SSE）
+      description: 推送状态迁移事件，供任务页实时更新。
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Mode:
+      type: object
+      description: 三个正交开关。默认 standard / customer / customer_session。
+      properties:
+        account_source:
+          type: string
+          enum: [customer_session, platform_account]
+          default: customer_session
+        card_source:
+          type: string
+          enum: [customer, platform]
+          default: customer
+        billing_mode:
+          type: string
+          enum: [standard, promo]
+          default: standard
+        risk_acknowledged:
+          type: boolean
+          default: false
+          description: billing_mode=promo 时必须为 true
+
+    OrderCreateRequest:
+      type: object
+      required: [plan, billing_country, mode]
+      properties:
+        plan:
+          type: string
+          enum: [plus, pro_lite, pro, pro_max]
+        billing_country:
+          type: string
+          description: ISO 国家码，须与代理出口一致
+        mode:
+          $ref: "#/components/schemas/Mode"
+        session:
+          type: string
+          description: >
+            客户交付的 ChatGPT session（account_source=customer_session 时必填）。
+            仅内存处理，不持久化。
+        payment_method_token:
+          type: string
+          description: >
+            浏览器端支付组件产出的不透明 PaymentMethod 标识（card_source=customer 时必填）。
+            **不是卡号**。
+
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum:
+            - created
+            - pending_checkout
+            - awaiting_payment
+            - paying
+            - requires_action
+            - unknown
+            - verifying
+            - active
+            - delivered
+            - rejected
+            - failed
+            - refunded
+        plan: { type: string }
+        billing_country: { type: string }
+        mode: { $ref: "#/components/schemas/Mode" }
+        checkout_url:
+          type: string
+          nullable: true
+          description: 托管结账链接（正价档位为默认）
+        subscription:
+          type: object
+          nullable: true
+          description: 交付前订阅校验结果
+          properties:
+            active: { type: boolean }
+            expires_at: { type: string, format: date-time, nullable: true }
+            channel: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          examples: [invalid_session, promo_not_acknowledged, billing_country_mismatch]
+        message: { type: string }
+        detail:
+          type: object
+          nullable: true
+          description: 已脱敏的补充信息（绝不含 token / 卡字段 / 代理密码）
