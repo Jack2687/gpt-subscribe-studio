@@ -71,7 +71,9 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
                 raise
             created = self._create(req, rotated)
         amount = created.amount
-        if amount is None:
+        # Team 托管长链的实际价格（席位、周期、优惠码）只在 Stripe 页面上有，拿不到报价就留空，
+        # 不能拿写死的 25 × 席位数冒充应付金额。
+        if amount is None and req.plan is not Plan.TEAM:
             amount = Decimal("0.00") if req.billing_mode is BillingMode.PROMO else _list_price(req)
         return CheckoutResult(
             checkout_url=created.checkout_url,
