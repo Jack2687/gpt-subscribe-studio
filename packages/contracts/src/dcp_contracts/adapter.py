@@ -42,17 +42,26 @@ class CheckoutRequest:
     billing_country: str
     billing_mode: BillingMode
     proxy: Optional[str] = None
+    promo_code: str = ""
+    workspace_name: str = ""
+    seat_quantity: int = 5
+    price_interval: str = "month"
 
 
 @dataclass(frozen=True)
 class CheckoutResult:
-    """托管结账链接结果。"""
+    """托管结账链接结果。``publishable_key`` 是 Stripe 公钥，可回给浏览器。"""
 
     checkout_url: str
     plan: Plan
     currency: str
     amount: Optional[Decimal] = None
     upstream_request_id: Optional[str] = None
+    checkout_session_id: Optional[str] = None
+    publishable_key: Optional[str] = None
+    customer_session_client_secret: Optional[str] = None
+    billing: Optional[Dict[str, str]] = None
+    checkout_kind: str = "custom"
 
 
 @runtime_checkable
@@ -84,6 +93,10 @@ class PaymentRequest:
     card_id: Optional[str] = None
     checkout_proxy: Optional[str] = None
     approve_proxy: Optional[str] = None
+    session: Optional[str] = None
+    checkout_session_id: Optional[str] = None
+    publishable_key: Optional[str] = None
+    billing: Optional[Dict[str, str]] = None
 
 
 @dataclass(frozen=True)

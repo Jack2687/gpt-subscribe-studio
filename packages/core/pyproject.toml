@@ -7,7 +7,13 @@ name = "dcp-core"
 version = "0.1.0"
 description = "共享底座：脱敏日志、配置加载、传输工具（直卡协议）"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "httpx>=0.26.0",
+    "curl_cffi>=0.13.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dcp_core"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/dcp_core/sentinel_assets" = "dcp_core/sentinel_assets"

@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from . import orders
+from . import orders, proxies
 
-__all__ = ["orders"]
+__all__ = ["orders", "proxies"]

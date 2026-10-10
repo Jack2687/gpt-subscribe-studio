@@ -1,36 +1,50 @@
-"""订单存储。
-
-**骨架实现**：进程内内存存储 + 幂等键去重。
-生产实现应替换为 SQLite（tasks.md T010 / ADR 0003），接口保持不变。
-
-宪法第 I 条：此处**不得**保存 session / token / 卡字段。
-"""
+"""订单存储。session / 卡字段绝不进入这里。"""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
-from dcp_contracts import Job, Order, OrderStatus
+from dcp_contracts import Job, Order, OrderStatus, SubscriptionInfo
+
+
+@dataclass
+class OrderView:
+    """API 展示用的附加字段（不含凭证）。"""
+
+    checkout_url: Optional[str] = None
+    checkout_session_id: Optional[str] = None
+    publishable_key: Optional[str] = None
+    customer_session_client_secret: Optional[str] = None
+    billing: Optional[Dict[str, str]] = None
+    amount: Optional[str] = None
+    currency: Optional[str] = None
+    last_error: Optional[str] = None
+    next_action: Optional[Dict[str, Any]] = None
+    subscription: Optional[SubscriptionInfo] = None
+    checkout_kind: Optional[str] = None
+    seat_quantity: Optional[int] = None
+    workspace_name: Optional[str] = None
+    promo_code: Optional[str] = None
+    price_interval: Optional[str] = None
 
 
 class InMemoryStore:
-    """最小的订单 / 任务存储。"""
-
     def __init__(self) -> None:
         self.orders: Dict[str, Order] = {}
         self.jobs: Dict[str, Job] = {}
+        self.views: Dict[str, OrderView] = {}
         self._idempotency: Dict[str, str] = {}
 
-    # -- 幂等 ---------------------------------------------------------------- #
     def find_by_idempotency(self, key: Optional[str]) -> Optional[Order]:
         if not key:
             return None
         order_id = self._idempotency.get(key)
         return self.orders.get(order_id) if order_id else None
 
-    # -- 订单 ---------------------------------------------------------------- #
     def create_order(self, order: Order, idempotency_key: Optional[str] = None) -> Order:
         self.orders[order.id] = order
+        self.views.setdefault(order.id, OrderView())
         if idempotency_key:
             self._idempotency[idempotency_key] = order.id
         return order
@@ -38,12 +52,14 @@ class InMemoryStore:
     def get_order(self, order_id: str) -> Optional[Order]:
         return self.orders.get(order_id)
 
+    def view(self, order_id: str) -> OrderView:
+        return self.views.setdefault(order_id, OrderView())
+
     def update_status(self, order_id: str, status: OrderStatus) -> Order:
         order = self.orders[order_id]
         order.status = status
         return order
 
-    # -- 任务 ---------------------------------------------------------------- #
     def add_job(self, job: Job) -> Job:
         self.jobs[job.id] = job
         return job
@@ -52,12 +68,12 @@ class InMemoryStore:
         return [job for job in self.jobs.values() if job.order_id == order_id]
 
     def clear(self) -> None:
-        """测试用。"""
-
         self.orders.clear()
         self.jobs.clear()
+        self.views.clear()
         self._idempotency.clear()
 
 
-#: 进程内单例（只在骨架/测试中使用；生产改注入）。
 store = InMemoryStore()
+
+__all__ = ["InMemoryStore", "OrderView", "store"]

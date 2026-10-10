@@ -1,0 +1,273 @@
+"""按阶段隔离的动态网关配置；口令只进入受限配置文件与 adapter 入参。"""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import os
+import re
+import secrets
+import string
+import tempfile
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from threading import RLock
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+ROLES = ("checkout", "approve")
+_REGION = re.compile(r"(-region-)([A-Za-z]{2})(?=-|$)")
+_SID = re.compile(r"(-sid-)([A-Za-z0-9]+)(?=-|$)")
+
+
+def route_username(username: str, region: str, sid: str) -> str:
+    """只改供应商账号中的地区/SID，保留账号前缀和时间参数。"""
+    if region:
+        if not _REGION.search(username):
+            raise ValueError("账号中没有 -region- 参数，请检查供应商格式")
+        username = _REGION.sub(lambda m: m[1] + region, username)
+    if sid:
+        if not _SID.search(username):
+            raise ValueError("账号中没有 -sid- 参数，请检查供应商格式")
+        username = _SID.sub(lambda m: m[1] + sid, username)
+    return username
+
+
+@dataclass
+class Gateway:
+    host: str = ""
+    port: int = 3010
+    scheme: str = "http"
+    username: str = field(default="", repr=False)
+    password: str = field(default="", repr=False)
+    region: str = ""
+    sid: str = ""
+    enabled: bool = False
+
+    def validate(self):
+        if self.scheme not in {"http", "https", "socks5"}:
+            raise ValueError("代理协议必须是 HTTP、HTTPS 或 SOCKS5")
+        if type(self.port) is not int or not 1 <= self.port <= 65535:
+            raise ValueError("端口必须是 1 到 65535 的整数")
+        if type(self.enabled) is not bool:
+            raise ValueError("启用状态格式不正确")
+        for value in (self.host, self.username, self.password, self.region, self.sid):
+            if not isinstance(value, str) or len(value) > 1024:
+                raise ValueError("代理字段格式不正确或过长")
+        self.host = self.host.strip().strip("[]")
+        if self.enabled and not self.host:
+            raise ValueError("请填写网关主机")
+        if self.host:
+            try:
+                ipaddress.ip_address(self.host)
+            except ValueError:
+                if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", self.host):
+                    raise ValueError("主机只能填写域名或 IP，不包含协议、端口和账号")
+        self.region = self.region.strip().upper()
+        if self.region and not re.fullmatch(r"[A-Z]{2}", self.region):
+            raise ValueError("地区填写两位国家码，例如 US")
+        if self.sid and not re.fullmatch(r"[A-Za-z0-9]{1,64}", self.sid):
+            raise ValueError("SID 只能包含字母和数字，最多 64 位")
+        self.username = route_username(self.username, self.region, self.sid)
+        region_match, sid_match = _REGION.search(self.username), _SID.search(self.username)
+        if region_match:
+            self.region = region_match[2].upper()
+        if sid_match:
+            self.sid = sid_match[2]
+        return self
+
+    def proxy_url(self) -> str | None:
+        if not self.enabled:
+            return None
+        auth = ""
+        if self.username or self.password:
+            auth = quote(self.username, safe="") + ":" + quote(self.password, safe="") + "@"
+        host = "[" + self.host + "]" if ":" in self.host else self.host
+        return f"{self.scheme}://{auth}{host}:{self.port}"
+
+    def public(self):
+        return {
+            "host": self.host,
+            "port": self.port,
+            "scheme": self.scheme,
+            "region": self.region,
+            "sid": self.sid,
+            "enabled": self.enabled,
+            "has_username": bool(self.username),
+            "has_password": bool(self.password),
+        }
+
+
+def proxy_config_path() -> Path:
+    return Path(
+        os.environ.get(
+            "DCP_PROXY_CONFIG",
+            str(Path(os.environ.get("DCP_CONFIG_DIR", "config")) / "proxy-gateways.json"),
+        )
+    )
+
+
+class GatewayStore:
+    def __init__(self, path: Path | None = None):
+        self.path = path if path is not None else proxy_config_path()
+        self.lock = RLock()
+
+    def _read(self):
+        if not self.path.exists():
+            return {"version": 1}
+        with self.path.open(encoding="utf-8") as stream:
+            data = json.load(stream)
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise ValueError("代理配置版本不正确")
+        return data
+
+    def get(self, role: str) -> Gateway:
+        if role not in ROLES:
+            raise ValueError("未知代理阶段")
+        with self.lock:
+            return Gateway(**self._read().get(role, {})).validate()
+
+    def save(self, role: str, values: dict) -> Gateway:
+        if role not in ROLES:
+            raise ValueError("未知代理阶段")
+        if not isinstance(values, dict) or set(values) - {
+            "host",
+            "port",
+            "scheme",
+            "username",
+            "password",
+            "region",
+            "sid",
+            "enabled",
+            "clear_auth",
+        }:
+            raise ValueError("代理配置字段不正确")
+        with self.lock:
+            data = self._read()
+            existing = Gateway(**data.get(role, {})).validate()
+            merged = asdict(existing)
+            clear_auth = values.get("clear_auth", False)
+            if type(clear_auth) is not bool:
+                raise ValueError("清除认证状态格式不正确")
+            merged.update(
+                {k: v for k, v in values.items() if k not in {"clear_auth", "username", "password"}}
+            )
+            for key in ("username", "password"):
+                supplied = values.get(key, "")
+                if not isinstance(supplied, str):
+                    raise ValueError("代理认证字段必须是文本")
+                if clear_auth:
+                    merged[key] = ""
+                elif supplied:
+                    merged[key] = supplied
+            if clear_auth:
+                merged["region"] = merged["sid"] = ""
+            gateway = Gateway(**merged).validate()
+            data[role] = asdict(gateway)
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            handle, temporary = tempfile.mkstemp(prefix=".proxy-", dir=self.path.parent)
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    json.dump(data, stream, ensure_ascii=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            return gateway
+
+
+def configured_proxy(role: str) -> str | None:
+    """每次读取持久化的该阶段配置，不覆盖另一阶段。"""
+    try:
+        return GatewayStore().get(role).proxy_url()
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def new_proxy_sid() -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+def rewrite_proxy_exit(proxy: str, *, region: str = "", sid: str = "") -> str:
+    """改用户名里的地区 / SID，不写回已保存的配置。"""
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return proxy
+    parsed = urlsplit(proxy)
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    hostname = parsed.hostname or ""
+    if not username or not hostname:
+        return proxy
+    region = str(region or "").strip().upper()
+    sid = str(sid or "").strip()
+    if region:
+        if _REGION.search(username):
+            username = _REGION.sub(lambda match: match[1] + region, username)
+        else:
+            username = f"{username}-region-{region}"
+    if sid:
+        if _SID.search(username):
+            username = _SID.sub(lambda match: match[1] + sid, username)
+        else:
+            username = f"{username}-sid-{sid}"
+    host = hostname
+    if ":" in hostname and not hostname.startswith("["):
+        host = f"[{hostname}]"
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+    netloc = f"{auth}{host}"
+    return urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def rotate_proxy_sid(proxy: str) -> str:
+    """只换 SID，地区不变。"""
+    return rewrite_proxy_exit(proxy, sid=new_proxy_sid())
+
+
+def session_proxy(role: str, region: str) -> str | None:
+    """本次开通专用出口：选定地区 + 随机 SID。"""
+    base = configured_proxy(role)
+    if not base:
+        return None
+    return rewrite_proxy_exit(base, region=normalize_region(region), sid=new_proxy_sid())
+
+
+def proxy_exit_region(proxy: str) -> str:
+    """从代理用户名里读当前出口国家码。"""
+    username = unquote(urlsplit(str(proxy or "")).username or "")
+    match = _REGION.search(username)
+    return match[2].upper() if match else ""
+
+
+def align_proxy_region(proxy: str | None, country: str) -> str | None:
+    """账单国必须等于出口国，否则 Stripe 会拒：Billing country must match request country。"""
+    proxy = str(proxy or "").strip()
+    country = normalize_region(country)
+    if not proxy:
+        return None
+    if not country or proxy_exit_region(proxy) == country:
+        return proxy
+    return rewrite_proxy_exit(proxy, region=country)
+
+
+def normalize_region(region: str) -> str:
+    return str(region or "").strip().upper()
+
+
+__all__ = [
+    "ROLES",
+    "Gateway",
+    "GatewayStore",
+    "configured_proxy",
+    "route_username",
+    "new_proxy_sid",
+    "rewrite_proxy_exit",
+    "rotate_proxy_sid",
+    "session_proxy",
+    "proxy_exit_region",
+    "align_proxy_region",
+]

@@ -1,7 +1,4 @@
-"""请求 / 响应 schema（FastAPI / pydantic v2）。
-
-与 `specs/001-subscribe-console/contracts/openapi.yaml` 保持一致。
-"""
+"""请求 / 响应 schema。"""
 
 from __future__ import annotations
 
@@ -11,8 +8,6 @@ from pydantic import BaseModel, Field
 
 
 class ModeIn(BaseModel):
-    """三个正交模式开关。"""
-
     account_source: str = Field(default="customer_session")
     card_source: str = Field(default="customer")
     billing_mode: str = Field(default="standard")
@@ -22,11 +17,17 @@ class ModeIn(BaseModel):
 class OrderCreateRequest(BaseModel):
     plan: str
     billing_country: str
-    mode: ModeIn
-    #: 客户交付的 session；仅内存处理，不持久化。
+    mode: ModeIn = Field(default_factory=ModeIn)
     session: Optional[str] = None
-    #: 浏览器端支付组件产出的不透明标识（**不是卡号**）。
     payment_method_token: Optional[str] = None
+    promo_code: str = ""
+    workspace_name: str = ""
+    seat_quantity: Optional[int] = None
+    price_interval: str = "month"
+
+
+class OrderPayRequest(BaseModel):
+    payment_method_token: str
 
 
 class SubscriptionOut(BaseModel):
@@ -42,7 +43,19 @@ class OrderOut(BaseModel):
     billing_country: str
     mode: ModeIn
     checkout_url: Optional[str] = None
+    publishable_key: Optional[str] = None
+    customer_session_client_secret: Optional[str] = None
+    amount: Optional[str] = None
+    currency: Optional[str] = None
+    billing: Optional[Dict[str, str]] = None
+    last_error: Optional[str] = None
+    next_action: Optional[Dict[str, Any]] = None
     subscription: Optional[SubscriptionOut] = None
+    checkout_kind: Optional[str] = None
+    seat_quantity: Optional[int] = None
+    workspace_name: Optional[str] = None
+    promo_code: Optional[str] = None
+    price_interval: Optional[str] = None
 
 
 class ErrorOut(BaseModel):

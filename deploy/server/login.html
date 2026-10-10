@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN" style="color-scheme: light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#efe8dc">
+  <title>访问密码 · 直卡协议</title>
+  <style>
+    :root { --canvas:#efe8dc; --surface:#fffcf7; --ink:#1c1916; --muted:#6b645c;
+      --border:#d4ccc0; --error:#9f2d2d; --space:8px; --input-radius:6px;
+      --ease-out:cubic-bezier(.25,.46,.45,.94); }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100dvh; display:grid; place-items:center;
+      padding:calc(var(--space) * 3); color:var(--ink); background:var(--canvas);
+      font:16px/1.6 ui-sans-serif,system-ui,sans-serif; }
+    main { position:relative; width:100%; max-width:400px; padding:calc(var(--space) * 4);
+      background:var(--surface); border:1px solid rgb(28 25 22 / .08); border-radius:14px;
+      box-shadow:0 1px 1px rgb(40 28 16 / .04), 0 12px 32px rgb(40 28 16 / .08); }
+    h1 { margin:0 0 var(--space); font-size:28px; line-height:1.2; letter-spacing:-.03em; }
+    p { margin:0; color:var(--muted); }
+    form { margin-top:calc(var(--space) * 4); }
+    label { display:block; margin-bottom:var(--space); font-weight:600; }
+    input { width:100%; min-height:48px; padding:12px 14px; font:inherit;
+      color:var(--ink); background:var(--surface); border:1px solid var(--border);
+      border-radius:var(--input-radius); }
+    input[aria-invalid="true"] { border-color:var(--error); }
+    button {
+      isolation:isolate; position:relative; overflow:hidden; width:100%; min-height:48px;
+      margin-top:calc(var(--space) * 3); padding:12px 20px; border:1px solid var(--ink);
+      border-radius:8px; font:inherit; font-weight:600; color:var(--surface);
+      background:var(--ink); cursor:pointer;
+      transition:transform 150ms var(--ease-out);
+    }
+    button::before {
+      content:""; position:absolute; inset:0; z-index:-1; background:#0a0908;
+      transform:scaleX(0); transform-origin:50%;
+      transition:transform 220ms var(--ease-out);
+    }
+    button:hover::before, button:focus-visible::before { transform:scaleX(1); }
+    button:active { transform:translateY(1px); }
+    input:focus-visible, button:focus-visible { outline:2px solid var(--ink); outline-offset:3px; }
+    #error { color:var(--error); margin-top:var(--space); font-size:14px; }
+    footer { margin-top:calc(var(--space) * 4); font-size:13px; color:var(--muted); }
+    @media (prefers-reduced-motion: reduce) {
+      button, button::before { transition:none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>直卡协议</h1>
+    <p>输入访问密码，进入测试控制台。</p>
+    <form method="post" action="/login">
+      <label for="password">访问密码</label>
+      <input id="password" name="password" type="password" required autofocus
+        autocomplete="current-password" aria-describedby="error" aria-invalid="{{INVALID}}">
+      <p id="error" role="alert" {{ERROR_HIDDEN}}>密码不正确，请重新输入。</p>
+      <button type="submit">进入控制台</button>
+    </form>
+    <footer>pay.example.com · 独立开通工具</footer>
+  </main>
+</body>
+</html>

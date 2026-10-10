@@ -89,7 +89,10 @@ def test_promo_without_acknowledgement_blocked_before_checkout() -> None:
 
 
 def test_next_order_status_mapping() -> None:
+    from dcp_orchestrator.pipeline import apply_payment_result
+
     assert next_order_status(OrderStatus.PAYING, PaymentStatus.SUCCEEDED) is OrderStatus.VERIFYING
+    assert apply_payment_result(OrderStatus.AWAITING_PAYMENT, PaymentStatus.SUCCEEDED) is OrderStatus.VERIFYING
     assert (
         next_order_status(OrderStatus.PAYING, PaymentStatus.REQUIRES_ACTION)
         is OrderStatus.REQUIRES_ACTION

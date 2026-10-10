@@ -57,10 +57,6 @@ def test_legacy_config_used_when_no_shards(tmp_path: Path) -> None:
     assert settings.extra["legacy"] is True
 
 
-def test_upstream_paths_and_missing_report(tmp_path: Path) -> None:
-    env = {"UPSTREAM_ZKKY_PATH": "/opt/zkky"}
-    settings = load_settings(config_dir=tmp_path, env=env)
-    assert settings.upstream_paths["UPSTREAM_ZKKY_PATH"] == "/opt/zkky"
-    missing = missing_upstreams(settings)
-    assert any("GPT-Register-Tool" in item for item in missing)
-    assert all("zkky" not in item for item in missing)
+def test_standalone_project_does_not_require_other_repos(tmp_path: Path) -> None:
+    settings = load_settings(config_dir=tmp_path, env={})
+    assert missing_upstreams(settings) == []

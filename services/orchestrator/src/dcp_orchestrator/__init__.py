@@ -7,6 +7,7 @@ from .pipeline import (
     OrderPipeline,
     PipelineDeps,
     assert_deliverable,
+    apply_payment_result,
     next_order_status,
 )
 
@@ -18,5 +19,6 @@ __all__ = [
     "OrderPipeline",
     "PAYMENT_STATUS_TO_ORDER",
     "next_order_status",
+    "apply_payment_result",
     "assert_deliverable",
 ]

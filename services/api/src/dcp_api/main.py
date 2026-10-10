@@ -1,58 +1,54 @@
-"""FastAPI 应用入口。
-
-    uvicorn dcp_api.main:app --host 127.0.0.1 --port 8080
-
-默认只监听回环地址（宪法「技术与安全约束」）。
-"""
+"""FastAPI 应用入口。默认只监听回环地址。"""
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
+import logging
 
 from fastapi import FastAPI
 
 from dcp_core import install_logging_filter
-from dcp_core.config import load_settings, missing_upstreams
+from dcp_core.config import load_settings, missing_upstreams, use_fake_adapters
+from dcp_core.proxies import GatewayStore
 
-from .db import init_db
-from .routers import orders
+from .routers import orders, proxies
 
 __version__ = "0.1.0"
 
 
+def _ensure_info_logging() -> None:
+    dcp = logging.getLogger("dcp")
+    dcp.setLevel(logging.INFO)
+    if not dcp.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        dcp.addHandler(handler)
+    dcp.propagate = False
+
+
 def create_app() -> FastAPI:
-    """构造应用。默认开启脱敏日志过滤器并初始化数据库。"""
-
     install_logging_filter()
+    _ensure_info_logging()
+    install_logging_filter(logging.getLogger("dcp"))
     settings = load_settings()
-
-    # 初始化数据库
-    db_path = os.environ.get("DCP_DB_PATH", "data/dcp.db")
-    db_url = f"sqlite:///{db_path}"
-    
-    # 确保数据目录存在
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    
-    init_db(db_url)
 
     app = FastAPI(
         title="DirectCard Protocol API",
         version=__version__,
-        description="自托管的 ChatGPT 订阅代开编排平台 API",
+        description="独立的 ChatGPT 订阅开通工具：粘贴 session，浏览器填卡。",
     )
     app.include_router(orders.router)
+    app.state.gateway_store = GatewayStore()
+    app.include_router(proxies.router)
 
     @app.get("/api/health", tags=["health"])
     async def health() -> dict:
-        missing = missing_upstreams(settings)
         return {
             "status": "ok",
             "version": __version__,
             "promo_enabled": settings.enable_promo_mode,
-            "db_path": db_path,
-            # 未配置上游时给出提示，但不阻断启动（便于离线开发）。
-            "missing_upstreams": missing,
+            "fake_adapters": use_fake_adapters(),
+            "missing_upstreams": missing_upstreams(settings),
         }
 
     return app

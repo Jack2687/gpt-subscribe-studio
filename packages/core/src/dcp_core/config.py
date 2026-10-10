@@ -97,14 +97,17 @@ def load_settings(
     return settings
 
 
-def missing_upstreams(settings: Settings) -> List[str]:
-    """返回尚未配置的上游引用名，供启动自检提示。"""
+def use_fake_adapters(env: Optional[Dict[str, str]] = None) -> bool:
+    """独立运行：默认走本项目自己的 ChatGPT/Stripe 客户端；测试可开 Fake。"""
 
-    required = {
-        "UPSTREAM_GPT_REGISTER_TOOL_PATH": "GPT-Register-Tool（checkout / account）",
-        "UPSTREAM_ZKKY_PATH": "zkky（payment）",
-    }
-    return [desc for key, desc in required.items() if key not in settings.upstream_paths]
+    environ = env if env is not None else os.environ
+    return environ.get("DCP_USE_FAKE", "").lower() in {"1", "true", "yes"}
+
+
+def missing_upstreams(settings: Settings) -> List[str]:
+    """本项目不再依赖其它本地仓库，启动自检为空。"""
+
+    return []
 
 
 __all__ = [

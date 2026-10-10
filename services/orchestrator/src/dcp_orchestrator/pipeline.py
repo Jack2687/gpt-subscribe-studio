@@ -66,6 +66,10 @@ class OrderPipeline:
         billing_country: str,
         mode: Mode,
         proxy: Optional[str] = None,
+        promo_code: str = "",
+        workspace_name: str = "",
+        seat_quantity: int = 5,
+        price_interval: str = "month",
     ) -> CheckoutResult:
         """阶段一：生成托管结账链接。``mode`` 非法时拒绝（含 promo 未确认）。"""
 
@@ -77,6 +81,10 @@ class OrderPipeline:
             billing_country=billing_country,
             billing_mode=mode.billing_mode,
             proxy=proxy,
+            promo_code=promo_code,
+            workspace_name=workspace_name,
+            seat_quantity=seat_quantity,
+            price_interval=price_interval,
         )
         return await self.deps.checkout.create_checkout(req)
 
@@ -90,6 +98,10 @@ class OrderPipeline:
         card_id: Optional[str] = None,
         checkout_proxy: Optional[str] = None,
         approve_proxy: Optional[str] = None,
+        session: Optional[str] = None,
+        checkout_session_id: Optional[str] = None,
+        publishable_key: Optional[str] = None,
+        billing: Optional[Dict[str, str]] = None,
     ) -> PaymentResult:
         """阶段二：卡支付。按 ``card_source`` 校验必备入参（凭证只在此处入参传递）。"""
 
@@ -109,6 +121,10 @@ class OrderPipeline:
             card_id=card_id,
             checkout_proxy=checkout_proxy,
             approve_proxy=approve_proxy,
+            session=session,
+            checkout_session_id=checkout_session_id,
+            publishable_key=publishable_key,
+            billing=billing,
         )
         return await self.deps.payment.pay(req)
 
@@ -124,6 +140,15 @@ def next_order_status(current: OrderStatus, payment: PaymentStatus) -> OrderStat
     target = PAYMENT_STATUS_TO_ORDER[payment]
     assert_transition(current, target)
     return target
+
+
+def apply_payment_result(current: OrderStatus, payment: PaymentStatus) -> OrderStatus:
+    """支付从 ``awaiting_payment`` 起步时，先进入 ``paying`` 再落到支付终态。"""
+
+    if current is OrderStatus.AWAITING_PAYMENT:
+        assert_transition(current, OrderStatus.PAYING)
+        current = OrderStatus.PAYING
+    return next_order_status(current, payment)
 
 
 def assert_deliverable(status: OrderStatus, info: SubscriptionInfo) -> None:
@@ -144,5 +169,6 @@ __all__ = [
     "OrderPipeline",
     "PAYMENT_STATUS_TO_ORDER",
     "next_order_status",
+    "apply_payment_result",
     "assert_deliverable",
 ]

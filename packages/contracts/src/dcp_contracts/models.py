@@ -34,6 +34,7 @@ class Plan(StrEnum):
     PRO_LITE = "pro_lite"
     PRO = "pro"
     PRO_MAX = "pro_max"
+    TEAM = "team"
 
 
 class AccountSource(StrEnum):

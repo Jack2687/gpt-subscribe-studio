@@ -1,80 +1,278 @@
 /**
- * 浏览器端卡支付组件（宪法第 I 条的核心边界）。
- *
- * 铁律：**卡号 / 有效期 / CVV 只在浏览器内存在**，绝不 POST 到本平台后端。
- * 组件最终产出一个**不透明** `payment_method_token`，只有它会被发送给后端。
- *
- * 骨架阶段用本地状态演示边界；接入真实支付方式时，把 `tokenize()` 换上游/PSP 的
- * 托管字段组件（如 Stripe Elements），本组件以外的代码无需改动。
+ * Stripe Payment Element：卡号只在 iframe 里，浏览器直接产出 ctoken_，不进本站。
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-export interface CardFieldsProps {
-  /** 只回传不透明标识，不回传任何卡字段。 */
-  onToken: (paymentMethodToken: string) => void;
-  disabled?: boolean;
-}
+export type BillingDetails = {
+  name?: string;
+  line1?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+};
 
-async function tokenize(cardNumber: string, expiry: string, cvv: string): Promise<string> {
-  // TODO(tasks.md T029): 替换为真实 PSP / 上游支付 SDK 的 tokenization。
-  // 这里只做长度校验并返回一个**假 token**，确保卡字段不会离开浏览器。
-  if (cardNumber.replace(/\s/g, "").length < 12 || !expiry || cvv.length < 3) {
-    throw new Error("请检查卡号 / 有效期 / CVV");
-  }
-  const fake = `pm_${Math.random().toString(36).slice(2, 10)}`;
-  return fake;
-}
+export type StripeCardHandle = {
+  tokenize: (billing: BillingDetails) => Promise<string>;
+};
 
-export function CardFields({ onToken, disabled }: CardFieldsProps) {
-  const [cardNumber, setCardNumber] = useState("");
-  const [expiry, setExpiry] = useState("");
-  const [cvv, setCvv] = useState("");
+type Props = {
+  publishableKey: string;
+  amount?: string | null;
+  currency?: string | null;
+  customerSessionClientSecret?: string | null;
+  checkoutUrl?: string | null;
+  onReady: (handle: StripeCardHandle | null) => void;
+};
+
+const ZERO_DECIMAL = new Set([
+  "BIF",
+  "CLP",
+  "DJF",
+  "GNF",
+  "JPY",
+  "KMF",
+  "KRW",
+  "MGA",
+  "PYG",
+  "RWF",
+  "UGX",
+  "VND",
+  "VUV",
+  "XAF",
+  "XOF",
+  "XPF",
+]);
+
+export function StripeCardFields({
+  publishableKey,
+  amount,
+  currency,
+  customerSessionClientSecret,
+  checkoutUrl,
+  onReady,
+}: Props) {
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const [hint, setHint] = useState("正在加载 Stripe 安全输入框…");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  async function handleTokenize() {
-    setBusy(true);
-    setError(null);
-    try {
-      const token = await tokenize(cardNumber, expiry, cvv);
-      // 关键：清空本地卡字段，只把 token 交给上层。
-      setCardNumber("");
-      setExpiry("");
-      setCvv("");
-      onToken(token);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "tokenization 失败");
-    } finally {
-      setBusy(false);
+  useEffect(() => {
+    let cancelled = false;
+    let paymentEl: { mount: (selector: string) => void; unmount: () => void } | null = null;
+
+    async function mount() {
+      try {
+        await loadStripe();
+        if (cancelled) return;
+        if (!window.Stripe) throw new Error("Stripe.js 不可用");
+        const stripe = window.Stripe(publishableKey);
+        if (cancelled) return;
+        const currencyCode = (currency || "usd").toLowerCase();
+        const options: Record<string, unknown> = {
+          mode: "payment",
+          currency: currencyCode,
+          amount: Math.max(1, toMinor(amount, currencyCode)),
+          setupFutureUsage: "off_session",
+          paymentMethodTypes: ["card", "link"],
+          allowedPaymentMethodTypes: ["card", "link"],
+          appearance: { theme: "stripe" },
+        };
+        if (customerSessionClientSecret) {
+          options.customerSessionClientSecret = customerSessionClientSecret;
+        }
+        const elements = createElements(stripe, options);
+        paymentEl = elements.create("payment", {
+          layout: "tabs",
+          wallets: { applePay: "never", googlePay: "never" },
+        });
+        paymentEl.mount("#dcp-payment");
+        setHint("卡片由 Stripe 托管输入，不会发到本站。");
+        onReadyRef.current({
+          tokenize: async (billing: BillingDetails) => {
+            const submitted = await elements.submit();
+            if (submitted?.error) {
+              throw new Error(submitted.error.message || "请检查卡片信息");
+            }
+            if (typeof stripe.createConfirmationToken !== "function") {
+              throw new Error("当前 Stripe.js 不支持 confirmation token，请刷新页面重试");
+            }
+            const result = await stripe.createConfirmationToken({
+              elements,
+              params: {
+                payment_method_data: {
+                  billing_details: {
+                    name: billing.name,
+                    address: {
+                      line1: billing.line1,
+                      city: billing.city,
+                      state: billing.state,
+                      postal_code: billing.postal_code,
+                      country: billing.country,
+                    },
+                  },
+                },
+                return_url: verifyUrl(checkoutUrl),
+              },
+            });
+            if (result.error || !result.confirmationToken?.id) {
+              throw new Error(result.error?.message ?? "生成支付确认失败");
+            }
+            return result.confirmationToken.id;
+          },
+        });
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : "Stripe 输入框加载失败";
+        setHint("");
+        setError(message);
+        onReadyRef.current(null);
+      }
     }
-  }
+
+    void mount();
+    return () => {
+      cancelled = true;
+      onReadyRef.current(null);
+      paymentEl?.unmount();
+    };
+  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl]);
 
   return (
-    <fieldset disabled={disabled || busy}>
-      <legend>支付卡片（敏感字段不出浏览器）</legend>
-      <label>
-        卡号
-        <input
-          inputMode="numeric"
-          autoComplete="off"
-          value={cardNumber}
-          onChange={(e) => setCardNumber(e.target.value)}
-          placeholder="4242 4242 4242 4242"
-        />
-      </label>
-      <label>
-        有效期
-        <input value={expiry} onChange={(e) => setExpiry(e.target.value)} placeholder="MM/YY" />
-      </label>
-      <label>
-        CVV
-        <input value={cvv} onChange={(e) => setCvv(e.target.value)} placeholder="123" />
-      </label>
-      {error && <p role="alert">{error}</p>}
-      <button type="button" onClick={handleTokenize}>
-        生成支付标识（不发送卡号）
-      </button>
-    </fieldset>
+    <>
+      <div id="dcp-payment" className="stripe-payment" />
+      {hint && !error && <p className="hint">{hint}</p>}
+      {error && (
+        <p className="alert" role="alert">
+          {error}
+        </p>
+      )}
+    </>
   );
+}
+
+type StripeElements = {
+  create: (type: string, options?: unknown) => { mount: (selector: string) => void; unmount: () => void };
+  submit: () => Promise<{ error?: { message?: string } }>;
+};
+
+declare global {
+  interface Window {
+    Stripe?: (key: string) => {
+      elements: (options?: unknown) => StripeElements;
+      createConfirmationToken?: (data: unknown) => Promise<{
+        confirmationToken?: { id: string };
+        error?: { message?: string };
+      }>;
+    };
+  }
+}
+
+function createElements(
+  stripe: { elements: (options?: unknown) => StripeElements },
+  options: Record<string, unknown>,
+): StripeElements {
+  const attempts: Record<string, unknown>[] = [options];
+  if (options.customerSessionClientSecret) {
+    const withoutCustomer = { ...options };
+    delete withoutCustomer.customerSessionClientSecret;
+    attempts.push(withoutCustomer);
+  }
+  if (options.allowedPaymentMethodTypes) {
+    const withoutAllowed = { ...options };
+    delete withoutAllowed.allowedPaymentMethodTypes;
+    attempts.push(withoutAllowed);
+  }
+  let lastError: unknown;
+  for (const attempt of attempts) {
+    try {
+      return stripe.elements(attempt);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Stripe 输入框初始化失败");
+}
+
+function toMinor(amount: string | null | undefined, currency: string): number {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (ZERO_DECIMAL.has(currency.toUpperCase())) return Math.round(value);
+  return Math.round(value * 100);
+}
+
+function verifyUrl(checkoutUrl?: string | null): string {
+  const parts = String(checkoutUrl || "")
+    .split("/")
+    .filter(Boolean);
+  const id = parts[parts.length - 1] || "";
+  if (id.startsWith("oaics_")) {
+    return `https://chatgpt.com/checkout/verify?stripe_session_id=${id}`;
+  }
+  return "https://chatgpt.com/";
+}
+
+function bodyHasStripeVersion(body: unknown): boolean {
+  if (typeof body === "string") return body.includes("_stripe_version");
+  if (body instanceof URLSearchParams) return body.has("_stripe_version") || body.toString().includes("_stripe_version");
+  return false;
+}
+
+function avoidDualStripeVersion(): void {
+  const g = window as unknown as { __dcpStripeVersionPatched?: boolean };
+  if (g.__dcpStripeVersionPatched) return;
+  g.__dcpStripeVersionPatched = true;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes("api.stripe.com") && bodyHasStripeVersion(init?.body)) {
+      const headers = new Headers(init?.headers);
+      headers.delete("Stripe-Version");
+      init = { ...init, headers };
+    }
+    return origFetch(input, init);
+  };
+  const proto = XMLHttpRequest.prototype;
+  const origOpen = proto.open;
+  const origSet = proto.setRequestHeader;
+  const origSend = proto.send;
+  proto.open = function (this: XMLHttpRequest, method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null) {
+    (this as XMLHttpRequest & { __dcpUrl?: string }).__dcpUrl = String(url);
+    return origOpen.call(this, method, url, async ?? true, username, password);
+  };
+  proto.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
+    if (name.toLowerCase() === "stripe-version") {
+      (this as XMLHttpRequest & { __dcpVer?: string }).__dcpVer = value;
+      return;
+    }
+    return origSet.call(this, name, value);
+  };
+  proto.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+    const extra = this as XMLHttpRequest & { __dcpUrl?: string; __dcpVer?: string };
+    const text = typeof body === "string" ? body : "";
+    const dual = String(extra.__dcpUrl || "").includes("api.stripe.com") && text.includes("_stripe_version");
+    if (extra.__dcpVer && !dual) origSet.call(this, "Stripe-Version", extra.__dcpVer);
+    return origSend.call(this, body as XMLHttpRequestBodyInit);
+  };
+}
+
+function loadStripe(): Promise<void> {
+  avoidDualStripeVersion();
+  if (window.Stripe) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector("script[data-dcp-stripe]");
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("Stripe.js 加载失败")));
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://js.stripe.com/v3/";
+    script.async = true;
+    script.dataset.dcpStripe = "1";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Stripe.js 加载失败"));
+    document.head.appendChild(script);
+  });
 }

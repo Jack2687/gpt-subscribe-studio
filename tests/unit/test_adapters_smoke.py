@@ -18,6 +18,7 @@ from dcp_contracts import (
 )
 from dcp_contracts.errors import DomainError
 from dcp_payment import FakePaymentAdapter, UpstreamPaymentAdapter
+from dcp_payment.adapter import _confirmation_token
 
 
 ALL_ADAPTERS = [FakeCheckoutAdapter(), FakePaymentAdapter(), FakeAccountAdapter()]
@@ -34,12 +35,12 @@ def test_every_adapter_declares_capabilities(adapter) -> None:
     assert caps.failure_modes
 
 
-def test_no_license_upstreams_are_labelled() -> None:
-    """无许可证上游必须被明确标注，避免误以为是开源。"""
+def test_adapters_are_self_contained() -> None:
+    """运行时不依赖其它本地仓库。"""
 
-    assert "NO-LICENSE" in UpstreamCheckoutAdapter().capabilities().license
-    assert "NO-LICENSE" in UpstreamAccountAdapter().capabilities().license
-    assert UpstreamPaymentAdapter().capabilities().license == "MIT"
+    assert "this repository" in UpstreamCheckoutAdapter().capabilities().license
+    assert "this repository" in UpstreamAccountAdapter().capabilities().license
+    assert "this repository" in UpstreamPaymentAdapter().capabilities().license
 
 
 def test_fake_checkout_standard_is_priced() -> None:
@@ -54,6 +55,28 @@ def test_fake_checkout_standard_is_priced() -> None:
     assert res.currency == "USD"
     assert str(res.amount) == "20.00"
     assert res.checkout_url.endswith("/fake/1")
+    assert res.billing and res.billing["country"] == "US"
+    assert res.billing["postal_code"]
+
+
+def test_fake_checkout_team_uses_seats_and_hosted_url() -> None:
+    fake = FakeCheckoutAdapter()
+    req = CheckoutRequest(
+        session="fake",
+        plan=Plan.TEAM,
+        billing_country="JP",
+        billing_mode=BillingMode.STANDARD,
+        seat_quantity=8,
+        promo_code="TEAM50",
+        workspace_name="Desk",
+    )
+    res = asyncio.run(fake.create_checkout(req))
+    assert res.currency == "JPY"
+    assert str(res.amount) == "200"
+    assert res.checkout_kind == "hosted"
+    assert "pay.openai.com/c/pay/" in res.checkout_url
+    assert fake.calls[0].seat_quantity == 8
+    assert fake.calls[0].promo_code == "TEAM50"
 
 
 def test_fake_checkout_promo_is_zero() -> None:
@@ -82,22 +105,28 @@ def test_fake_payment_scripted_3ds_then_success() -> None:
     assert len(fake.calls) == 2
 
 
-def test_upstream_checkout_fails_fast_without_path(monkeypatch) -> None:
-    monkeypatch.delenv("UPSTREAM_GPT_REGISTER_TOOL_PATH", raising=False)
+def test_upstream_checkout_fails_fast_without_session() -> None:
     req = CheckoutRequest(
-        session="s", plan=Plan.PLUS, billing_country="US", billing_mode=BillingMode.STANDARD
+        session="", plan=Plan.PLUS, billing_country="US", billing_mode=BillingMode.STANDARD
     )
     with pytest.raises(DomainError) as exc:
         asyncio.run(UpstreamCheckoutAdapter().create_checkout(req))
-    assert exc.value.code is ErrorCode.CHECKOUT_UPSTREAM_ERROR
+    assert exc.value.code is ErrorCode.INVALID_SESSION
 
 
-def test_upstream_payment_fails_fast_without_path(monkeypatch) -> None:
-    monkeypatch.delenv("UPSTREAM_ZKKY_PATH", raising=False)
+def test_confirmation_token_keeps_browser_ctoken() -> None:
+    class _Client:
+        def create_confirmation_token(self, **kwargs):
+            raise AssertionError("ctoken_ should not be converted")
+
+    assert _confirmation_token(_Client(), publishable_key="pk", token="ctoken_abc") == "ctoken_abc"
+
+
+def test_upstream_payment_fails_fast_without_session() -> None:
     req = PaymentRequest(checkout_url="u", country="US", payment_method_token="pm")
     with pytest.raises(DomainError) as exc:
         asyncio.run(UpstreamPaymentAdapter().pay(req))
-    assert exc.value.code is ErrorCode.PAYMENT_UNKNOWN_STATE
+    assert exc.value.code is ErrorCode.INVALID_SESSION
 
 
 def test_fake_account_reports_inactive_when_configured() -> None:

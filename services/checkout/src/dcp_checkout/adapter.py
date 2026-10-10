@@ -1,12 +1,7 @@
-"""结账链接生成能力（adapter）。
-
-上游：`2951461586/GPT-Register-Tool` 的 ``direct_card`` 提链（**无 LICENSE**）。
-本模块只定义接口与离线 fake，**不复制上游代码**（ADR 0001）。
-"""
+"""结账能力。独立实现，直接请求 ChatGPT，不依赖其它本地项目。"""
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import List, Optional
@@ -19,174 +14,127 @@ from dcp_contracts import (
     Plan,
 )
 from dcp_contracts.errors import DomainError, ErrorCode
+from dcp_core.billing import address_for
+from dcp_core.chatgpt import ChatGPTClient, clamp_team_seats
+from dcp_core.countries import country_codes, currency_for
+from dcp_core.proxies import align_proxy_region, configured_proxy, rotate_proxy_sid, session_proxy
 
-#: 上游目录环境变量（见 deploy/.env.example）。
-ENV_UPSTREAM_PATH = "UPSTREAM_GPT_REGISTER_TOOL_PATH"
-
-_CURRENCY_BY_COUNTRY = {"US": "USD", "JP": "JPY", "PH": "PHP", "GB": "GBP"}
-_STANDARD_PRICE = Decimal("20.00")
+_LIST_PRICE = {
+    Plan.PLUS: Decimal("20.00"),
+    Plan.PRO_LITE: Decimal("20.00"),
+    Plan.PRO: Decimal("200.00"),
+    Plan.PRO_MAX: Decimal("200.00"),
+    Plan.TEAM: Decimal("125.00"),
+}
 
 
 class CheckoutAdapterBase:
-    """checkout adapter 的公共能力声明。"""
-
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
-            source="2951461586/GPT-Register-Tool@direct_card",
-            license="NO-LICENSE (all rights reserved) — 仅 adapter 引用，不复制",
+            source="self-contained chatgpt.com payments/checkout",
+            license="MIT (this repository)",
             supports={
                 "plans": [p.value for p in Plan],
                 "billing_modes": [m.value for m in BillingMode],
-                "countries": sorted(_CURRENCY_BY_COUNTRY),
+                "countries": country_codes(),
             },
             failure_modes={
-                "billing_country_mismatch": "代理出口国家与账单国家不一致 → 改配置后重试",
-                "unusual_activity": "上游拒绝创建结账 → 重试一次，再失败转人工",
-                "session_expired": "401 → 需重新导出 session",
-                "cloudflare_403": "代理节点被拦 → 换节点后重试",
+                "session_expired": "401 → 重新粘贴 session",
+                "cloudflare_403": "被拦 → 换与账单国家一致的出口代理",
+                "unusual_activity": "上游判定异常流量 → 换 SID 或同国家新 session",
+                "sentinel_missing": "无法签发 Sentinel → 检查 Node 与出口代理",
             },
         )
 
 
 @dataclass
 class UpstreamCheckoutAdapter(CheckoutAdapterBase):
-    """真实 adapter：生成 ChatGPT 直卡结账链接。
+    """用客户 session 向 ChatGPT 创建结账会话，并取出 Stripe 公钥。"""
 
-    自己实现核心逻辑，参考上游流程但不依赖其代码：
-    1. 使用 session 访问 ChatGPT 后台
-    2. 创建 direct_card 支付方式的结账链接
-    3. 返回托管结账 URL 供后续绑卡支付
-    """
-
-    upstream_path: Optional[str] = None
-    timeout: int = 30
-
-    def __post_init__(self) -> None:
-        self.upstream_path = self.upstream_path or os.environ.get(ENV_UPSTREAM_PATH)
+    timeout: int = 120
 
     async def create_checkout(self, req: CheckoutRequest) -> CheckoutResult:
-        """生成结账链接（T019）。"""
-        import httpx
-        from dcp_core.redaction import redact_sensitive
-        
         if not req.session:
-            raise DomainError(
-                ErrorCode.INVALID_SESSION,
-                "缺少 session，无法创建结账链接",
-            )
-        
-        # ChatGPT 订阅 API 端点
-        api_base = "https://chatgpt.com/backend-api"
-        
-        # 构建请求头
-        headers = {
-            "Authorization": f"Bearer {req.session}",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        }
-        
-        # 根据套餐映射到 ChatGPT 的产品 ID
-        plan_mapping = {
-            Plan.PLUS: "chatgpt_plus",
-            Plan.PRO_LITE: "chatgpt_pro_lite",
-            Plan.PRO: "chatgpt_pro",
-            Plan.PRO_MAX: "chatgpt_pro_max",
-        }
-        
-        product_id = plan_mapping.get(req.plan, "chatgpt_plus")
-        
-        # 构建结账请求
-        checkout_payload = {
-            "product_id": product_id,
-            "payment_method": "direct_card",
-            "billing_country": req.billing_country,
-            "is_promotional": req.billing_mode == BillingMode.PROMO,
-        }
-        
+            raise DomainError(ErrorCode.INVALID_SESSION, "缺少 session，无法创建结账")
+        proxy = align_proxy_region(
+            req.proxy or session_proxy("checkout", req.billing_country) or configured_proxy("checkout"),
+            req.billing_country,
+        )
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                proxy=req.proxy if req.proxy else None,
-            ) as client:
-                # 创建结账会话
-                response = await client.post(
-                    f"{api_base}/payments/checkout",
-                    json=checkout_payload,
-                    headers=headers,
-                )
-                
-                if response.status_code == 401:
-                    raise DomainError(
-                        ErrorCode.INVALID_SESSION,
-                        "Session 已失效或无效",
-                    )
-                elif response.status_code == 403:
-                    raise DomainError(
-                        ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                        "请求被拦截（可能是 Cloudflare），请更换代理",
-                    )
-                elif response.status_code >= 400:
-                    error_msg = redact_sensitive(response.text)
-                    raise DomainError(
-                        ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                        f"创建结账失败: HTTP {response.status_code} - {error_msg}",
-                    )
-                
-                data = response.json()
-                
-                # 提取结账链接
-                checkout_url = data.get("checkout_url") or data.get("url")
-                if not checkout_url:
-                    raise DomainError(
-                        ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                        f"上游响应缺少 checkout_url: {redact_sensitive(str(data))}",
-                    )
-                
-                # 提取金额信息
-                amount = Decimal(str(data.get("amount", "20.00")))
-                currency = data.get("currency", _CURRENCY_BY_COUNTRY.get(req.billing_country, "USD"))
-                
-                return CheckoutResult(
-                    checkout_url=checkout_url,
-                    plan=req.plan,
-                    currency=currency,
-                    amount=amount,
-                    upstream_request_id=data.get("request_id", ""),
-                )
-                
-        except httpx.TimeoutException:
-            raise DomainError(
-                ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                f"请求超时（{self.timeout}s），请检查网络或代理",
+            created = self._create(req, proxy)
+        except DomainError as exc:
+            if exc.code is not ErrorCode.CHECKOUT_UPSTREAM_ERROR or "异常流量" not in str(exc):
+                raise
+            rotated = rotate_proxy_sid(proxy or "")
+            if not rotated or rotated == proxy:
+                raise
+            created = self._create(req, rotated)
+        amount = created.amount
+        if amount is None:
+            amount = Decimal("0.00") if req.billing_mode is BillingMode.PROMO else _list_price(req)
+        return CheckoutResult(
+            checkout_url=created.checkout_url,
+            plan=req.plan,
+            currency=created.currency,
+            amount=amount,
+            upstream_request_id=created.checkout_session_id,
+            checkout_session_id=created.checkout_session_id,
+            publishable_key=created.publishable_key or None,
+            customer_session_client_secret=created.customer_session_client_secret or None,
+            billing=dict(address_for(req.billing_country)),
+            checkout_kind=created.checkout_kind or ("hosted" if req.plan is Plan.TEAM else "custom"),
+        )
+
+    def _create(self, req: CheckoutRequest, proxy: Optional[str]):
+        client = ChatGPTClient.from_raw_session(req.session, proxy=proxy)
+        client.timeout = float(self.timeout)
+        try:
+            return client.create_checkout(
+                plan=str(req.plan),
+                country=req.billing_country,
+                promo=req.billing_mode is BillingMode.PROMO,
+                promo_code=req.promo_code,
+                workspace_name=req.workspace_name,
+                seat_quantity=req.seat_quantity,
+                price_interval=req.price_interval,
             )
-        except httpx.RequestError as e:
-            raise DomainError(
-                ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                f"网络请求失败: {redact_sensitive(str(e))}",
-            )
+        finally:
+            client.close()
 
 
 @dataclass
 class FakeCheckoutAdapter(CheckoutAdapterBase):
-    """离线测试用 adapter（宪法第 V 条）。"""
-
     calls: List[CheckoutRequest] = field(default_factory=list)
 
     async def create_checkout(self, req: CheckoutRequest) -> CheckoutResult:
         self.calls.append(req)
-        currency = _CURRENCY_BY_COUNTRY.get(req.billing_country, "USD")
-        amount = (
-            Decimal("0.00")
-            if req.billing_mode is BillingMode.PROMO
-            else _STANDARD_PRICE
-        )
+        currency = currency_for(req.billing_country)
+        amount = Decimal("0.00") if req.billing_mode is BillingMode.PROMO else _list_price(req)
+        hosted = req.plan is Plan.TEAM
         return CheckoutResult(
-            checkout_url=f"https://chatgpt.com/checkout/fake/{len(self.calls)}",
+            checkout_url=(
+                f"https://pay.openai.com/c/pay/cs_test_fake_{len(self.calls)}"
+                if hosted
+                else f"https://chatgpt.com/checkout/fake/{len(self.calls)}"
+            ),
             plan=req.plan,
             currency=currency,
             amount=amount,
             upstream_request_id="fake-checkout-req",
+            checkout_session_id=(
+                f"cs_test_fake_{len(self.calls)}" if hosted else f"oaics_fake_{len(self.calls)}"
+            ),
+            publishable_key=None,
+            billing=dict(address_for(req.billing_country)),
+            checkout_kind="hosted" if hosted else "custom",
         )
+
+
+def _list_price(req: CheckoutRequest) -> Decimal:
+    if req.plan is Plan.TEAM:
+        seats = clamp_team_seats(req.seat_quantity)
+        return Decimal(str(25 * seats))
+    return _LIST_PRICE.get(req.plan, Decimal("20.00"))
 
 
 __all__ = ["CheckoutAdapterBase", "UpstreamCheckoutAdapter", "FakeCheckoutAdapter"]

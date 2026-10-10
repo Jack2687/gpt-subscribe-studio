@@ -1,34 +1,39 @@
 import { useState } from "react";
 
+import { OrderDetail } from "./pages/OrderDetail";
 import { OrderNew } from "./pages/OrderNew";
 
-/**
- * 骨架版单页应用：未选订单时显示下单表单，创建后显示订单号。
- * 正式版会接入路由与订单详情/SSE（tasks.md T022、T033）。
- */
 export function App() {
   const [orderId, setOrderId] = useState<string | null>(null);
 
-  return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
-      <h1>直卡协议 · 订阅代开控制台</h1>
-      <p style={{ color: "#666" }}>
-        本地自托管 · 凭证零持久化 · 卡敏感字段不出浏览器
-      </p>
+  async function logout() {
+    await fetch("/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
 
-      {orderId ? (
-        <section>
-          <h2>订单已创建</h2>
-          <p>
-            订单号：<code>{orderId}</code>
-          </p>
-          <button type="button" onClick={() => setOrderId(null)}>
-            再下一单
+  return (
+    <main className="page">
+      <header className="hero">
+        <div className="topbar">
+          <h1>直卡协议</h1>
+          <button type="button" className="btn btn-ghost" onClick={() => void logout()}>
+            退出
           </button>
-        </section>
-      ) : (
-        <OrderNew onCreated={setOrderId} />
-      )}
+        </div>
+        <p>
+          Plus / Pro 在本页填卡，建议粘贴整段 session JSON。Team 走托管长链，通常只贴 accessToken 就能出链；可填席位、优惠码和地区货币。卡号不经过本站服务器。
+        </p>
+      </header>
+      <div className="card">
+        {orderId ? (
+          <OrderDetail orderId={orderId} onReset={() => setOrderId(null)} />
+        ) : (
+          <OrderNew onCreated={setOrderId} />
+        )}
+      </div>
+      <footer>
+        <p>pay.example.com · 独立小工具，不依赖其它项目</p>
+      </footer>
     </main>
   );
 }
