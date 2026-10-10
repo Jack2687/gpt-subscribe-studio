@@ -1043,10 +1043,13 @@ class ChatGPTClient:
                 )
                 if submission_state(payload) in {"failed", "declined", "canceled", "cancelled"}:
                     attempt = payload.get("submission_attempt")
+                    updates = attempt.get("manual_approval_updates") if isinstance(attempt, dict) else None
                     logger.warning(
-                        "stripe_submission_failed detail=%s attempt_keys=%s",
+                        "stripe_submission_failed detail=%s attempt_keys=%s pi_status=%s approval_updates=%s",
                         submission_failure_detail(payload) or "-",
                         sorted(attempt) if isinstance(attempt, dict) else [],
+                        nested_intent_status(payload) or "-",
+                        redact_sensitive(json.dumps(updates, ensure_ascii=False, default=str))[:400] if updates else "-",
                     )
                 if payment_page_settled(payload):
                     return payload
