@@ -157,6 +157,16 @@ def hosted_checkout_url(url: str = "", session_id: str = "") -> str:
     return value
 
 
+# HAR（绑卡chatgpt.com.har）里 payments/checkout 与 checkout/confirm 请求都带这组前端标识。
+_CODEX_WEB_HEADERS = {
+    "originator": "Codex Browser",
+    "x-openai-web-frontend": "codex_webview",
+    "x-openai-codex-window-type": "browser",
+    "x-oai-mcp-form-version": "2",
+    "x-openai-checkout-source": "chatgpt_web_merged",
+}
+
+
 def _checkout_body(
     *,
     plan: str,
@@ -197,7 +207,6 @@ def _checkout_body(
         "checkout_appearance": "light",
         "cancel_url": f"{APP_BASE}/?cta_tab=personal",
         "purchase_attempt_id": str(uuid.uuid4()),
-        "checkout_ui_mode": "custom",
     }
     if promo:
         body["promo_campaign"] = {
@@ -341,6 +350,8 @@ class ChatGPTClient:
             "x-openai-target-path": route,
             "x-openai-target-route": route,
         }
+        if route.startswith("/backend-api/payments/"):
+            headers.update(_CODEX_WEB_HEADERS)
         if route.startswith("/backend-api/payments/") and self.attestation:
             headers["oai-web-deployment-attestation"] = self.attestation
             headers["OAI-Web-Deployment-Attestation"] = self.attestation
@@ -606,6 +617,12 @@ class ChatGPTClient:
             path_id = stripe_id if (session_id.startswith("oaics_") and stripe_id) else session_id
             url = raw_url if raw_url.startswith("http") else f"{APP_BASE}/checkout/{processor}/{path_id}"
         processor = str(payload.get("processor_entity") or _processor(country))
+        logger.info(
+            "checkout_session_kind=%s processor=%s hosted=%s",
+            session_id.split("_", 1)[0] + "_" if "_" in session_id else "?",
+            processor,
+            hosted,
+        )
         confirm_return = str(payload.get("confirm_return_url") or "").strip()
         if not hosted and not confirm_return:
             confirm_return = stripe_verify_url(session_id, processor=processor, plan=plan)

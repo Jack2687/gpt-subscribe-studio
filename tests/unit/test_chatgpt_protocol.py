@@ -725,3 +725,29 @@ def test_payment_intent_from_payment_page_ignores_cs_id() -> None:
     assert intent_id == "pi_nested"
     assert secret == "pi_nested_secret_zz"
     assert "checkout/verify" in return_url
+
+
+def test_payment_checkout_body_matches_har_and_headers_carry_codex_identity() -> None:
+    from dcp_core.chatgpt import ChatGPTClient, _checkout_body
+
+    body = _checkout_body(plan="pro_lite", country="US", currency="USD")
+    assert "checkout_ui_mode" not in body
+    assert body["checkout_source"] == "chatgpt_web_merged"
+
+    client = ChatGPTClient(access_token="t")
+    headers = client._route_headers("/backend-api/payments/checkout")
+    assert headers["originator"] == "Codex Browser"
+    assert headers["x-openai-web-frontend"] == "codex_webview"
+    assert headers["x-oai-mcp-form-version"] == "2"
+    assert "originator" not in client._route_headers("/backend-api/sentinel/req")
+
+
+def test_approval_retry_only_without_payment_intent() -> None:
+    from dcp_payment.adapter import _approval_retryable
+
+    failed = {"submission_attempt": {"state": "failed", "error": {"code": "checkout_approval_internal_error"}}}
+    assert _approval_retryable(failed) is True
+    with_pi = {**failed, "payment_intent": {"id": "pi_123", "status": "requires_payment_method"}}
+    assert _approval_retryable(with_pi) is False
+    other = {"submission_attempt": {"state": "failed", "error": {"code": "card_declined"}}}
+    assert _approval_retryable(other) is False

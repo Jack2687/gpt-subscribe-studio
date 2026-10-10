@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +45,21 @@ class PaymentAdapterBase:
         )
 
 
+logger = logging.getLogger("dcp.payment")
+
+_APPROVAL_RETRIES = 1
+
+
+def _approval_retryable(confirmed: Dict[str, Any]) -> bool:
+    """ChatGPT 审批内部错误且没有 PaymentIntent（不可能已扣款）时才允许重试一次。"""
+    if submission_state(confirmed) != "failed":
+        return False
+    if "checkout_approval_internal_error" not in submission_failure_detail(confirmed):
+        return False
+    intent_id, _, _ = payment_intent_from_confirm(confirmed)
+    return not intent_id
+
+
 @dataclass
 class UpstreamPaymentAdapter(PaymentAdapterBase):
     timeout: int = 120
@@ -79,27 +95,32 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
             raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少 Stripe 公钥")
 
         billing = dict(req.billing or address_for(req.country))
-        confirm_token = _confirmation_token(
-            client, publishable_key=pk, token=req.payment_method_token or ""
-        )
         checkout_id = public_checkout_id(checkout_id)
         stripe_custom = checkout_id.startswith("cs_")
-        confirmed = client.confirm_checkout(
-            checkout_session_id=checkout_id,
-            confirm_token=confirm_token,
-            checkout_url=page_url,
-            billing=billing,
-            currency=currency_for(req.country),
-            publishable_key=pk,
-        )
-        if stripe_custom:
-            confirmed = client.finalize_stripe_custom_checkout(
-                checkout_session_id=checkout_id,
-                publishable_key=pk,
-                checkout_url=page_url,
-                processor_entity=_processor_from_checkout_url(page_url),
-                confirmed=confirmed,
+        for attempt in range(_APPROVAL_RETRIES + 1):
+            confirm_token = _confirmation_token(
+                client, publishable_key=pk, token=req.payment_method_token or ""
             )
+            confirmed = client.confirm_checkout(
+                checkout_session_id=checkout_id,
+                confirm_token=confirm_token,
+                checkout_url=page_url,
+                billing=billing,
+                currency=currency_for(req.country),
+                publishable_key=pk,
+            )
+            if stripe_custom:
+                confirmed = client.finalize_stripe_custom_checkout(
+                    checkout_session_id=checkout_id,
+                    publishable_key=pk,
+                    checkout_url=page_url,
+                    processor_entity=_processor_from_checkout_url(page_url),
+                    confirmed=confirmed,
+                )
+            if attempt < _APPROVAL_RETRIES and _approval_retryable(confirmed):
+                logger.warning("checkout_approval_internal_error 无 PaymentIntent，重试 %s/%s", attempt + 1, _APPROVAL_RETRIES)
+                continue
+            break
         intent_id, intent_secret, return_url = payment_intent_from_confirm(confirmed)
         chatgpt_status = str(confirmed.get("status") or confirmed.get("result") or "")
         kind = str(confirmed.get("type") or "")
