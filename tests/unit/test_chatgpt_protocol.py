@@ -2,6 +2,7 @@ import base64
 import json
 from decimal import Decimal
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -13,10 +14,13 @@ from dcp_core.chatgpt import (
     checkout_confirm_blocked,
     checkout_confirm_blocked_advice,
     checkout_confirm_message,
+    checkout_requires_approval,
     clamp_team_seats,
+    expected_amount_minor,
     hosted_checkout_url,
     intent_id_from_secret,
     jwt_account_id,
+    openai_internal_checkout_id,
     payment_intent_from_confirm,
     setup_intent_from_payload,
     stripe_checkout_id,
@@ -286,11 +290,17 @@ class _FakeResponse:
 
 
 class _FakeHttp:
-    def __init__(self, html: str) -> None:
+    def __init__(self, html: str, payload: dict | None = None) -> None:
         self.headers: dict = {}
         self.cookies: dict = {}
         self.posts: list = []
         self._html = html
+        self.payload = payload or {
+            "checkout_session_id": "cs_test_1",
+            "processor_entity": "openai_llc",
+            "publishable_key": "pk_test_liveish",
+            "customer_session_client_secret": "cuss_test",
+        }
 
     def get(self, url: str, **kwargs):
         if "stripe_client_bootstrap" in url:
@@ -299,14 +309,44 @@ class _FakeHttp:
 
     def post(self, url: str, **kwargs):
         self.posts.append({"url": url, "headers": kwargs.get("headers") or {}, "json": kwargs.get("json")})
-        return _FakeResponse(
-            payload={
-                "checkout_session_id": "cs_test_1",
-                "processor_entity": "openai_llc",
-                "publishable_key": "pk_test_liveish",
-                "customer_session_client_secret": "cuss_test",
-            }
-        )
+        return _FakeResponse(payload=self.payload)
+
+
+class _StripeHttp:
+    def __init__(self, poll_payload: dict | None = None) -> None:
+        self.headers: dict = {}
+        self.posts: list = []
+        self.gets: list = []
+        self.poll_payload = poll_payload or {
+            "id": "cs_live_1",
+            "status": "complete",
+            "submission_attempt": {"state": "succeeded"},
+            "payment_intent": {
+                "id": "pi_1",
+                "client_secret": "pi_1_secret_x",
+                "status": "succeeded",
+            },
+        }
+
+    def get(self, url: str, **kwargs):
+        self.gets.append({"url": url, "params": kwargs.get("params")})
+        return _FakeResponse(payload=self.poll_payload)
+
+    def post(self, url: str, **kwargs):
+        self.posts.append({"url": url, "data": kwargs.get("data")})
+        if url.endswith("/init"):
+            return _FakeResponse(
+                payload={"init_checksum": "chk_1", "total_summary": {"due": 2000, "subtotal": 1800}}
+            )
+        if url.endswith("/confirm"):
+            return _FakeResponse(
+                payload={
+                    "id": "cs_live_1",
+                    "status": "open",
+                    "submission_attempt": {"state": "requires_approval"},
+                }
+            )
+        return _FakeResponse(payload={})
 
 
 def test_create_checkout_sends_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -400,6 +440,18 @@ def test_stripe_automatic_payment_methods_conflict_is_mapped() -> None:
         _raise_stripe(payload, 400)
     assert "采集模式和确认接口不一致" in str(exc.value)
     assert "automatic payment methods" not in str(exc.value)
+
+
+def test_stripe_missing_expected_amount_is_mapped() -> None:
+    from dcp_core.chatgpt import _raise_stripe
+
+    with pytest.raises(DomainError) as exc:
+        _raise_stripe(
+            {"error": {"message": "The expected amount of the confirmation has to be provided."}},
+            400,
+        )
+    assert "应付金额" in str(exc.value)
+    assert "has to be provided" not in str(exc.value)
 
 
 def test_chatgpt_http_500_is_mapped() -> None:
@@ -506,3 +558,170 @@ def test_create_checkout_fails_closed_without_sentinel(monkeypatch: pytest.Monke
     with pytest.raises(DomainError) as exc:
         client.create_checkout(plan="plus", country="US")
     assert "风控令牌" in str(exc.value)
+
+
+def _allow_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "dcp_core.chatgpt.mint",
+        lambda **kwargs: {
+            "p": "pow",
+            "c": "chal",
+            "t": "turn",
+            "id": kwargs.get("device_id"),
+            "flow": kwargs.get("flow"),
+        },
+    )
+
+
+def test_create_checkout_prefers_oaics_when_cs_live_is_also_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_sentinel(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp(
+        "",
+        payload={
+            "id": "cs_live_spa",
+            "checkout_session_id": "cs_live_spa",
+            "confirm_return_url": "https://chatgpt.com/checkout/verify?stripe_session_id=oaics_internal",
+            "processor_entity": "openai_llc",
+            "publishable_key": "pk_test_liveish",
+        },
+    )
+    created = client.create_checkout(plan="plus", country="US")
+    assert created.checkout_session_id == "oaics_internal"
+    assert created.checkout_url == "https://chatgpt.com/checkout/openai_llc/cs_live_spa"
+    assert openai_internal_checkout_id(created.confirm_return_url) == "oaics_internal"
+
+
+def test_internal_checkout_error_is_mapped() -> None:
+    client = ChatGPTClient(access_token="tok")
+    response = SimpleNamespace(
+        status_code=400,
+        text='{"detail":"This endpoint is only for internal checkout sessions"}',
+    )
+    with pytest.raises(DomainError) as exc:
+        client._raise(ErrorCode.PAYMENT_UNKNOWN_STATE, response, "确认结账")
+    assert "oaics_" in str(exc.value)
+    assert "cs_" in str(exc.value)
+    assert "internal checkout sessions" not in str(exc.value)
+
+
+def test_confirm_checkout_oaics_posts_chatgpt_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    _allow_sentinel(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp("")
+    client.confirm_checkout(checkout_session_id="oaics_abc", confirm_token="ctoken_1")
+    urls = [item["url"] for item in client._http.posts]
+    assert any(url.endswith("/backend-api/payments/checkout/confirm") for url in urls)
+    assert all("/payment_pages/" not in url for url in urls)
+    confirm = next(item for item in client._http.posts if item["url"].endswith("/confirm"))
+    assert confirm["json"]["checkout_session_id"] == "oaics_abc"
+
+
+def test_confirm_checkout_cs_live_uses_payment_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    _allow_sentinel(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp("")
+    client._stripe_http = _StripeHttp()
+    payload = client.confirm_checkout(
+        checkout_session_id="cs_live_abc123",
+        confirm_token="ctoken_1",
+        publishable_key="pk_test_liveish",
+    )
+    chatgpt_urls = [item["url"] for item in client._http.posts]
+    assert not any("/payments/checkout/confirm" in url for url in chatgpt_urls)
+    stripe_urls = [item["url"] for item in client._stripe_http.posts]
+    assert any(url.endswith("/payment_pages/cs_live_abc123/init") for url in stripe_urls)
+    assert any(url.endswith("/payment_pages/cs_live_abc123/confirm") for url in stripe_urls)
+    assert payload.get("payment_intent") is None
+    confirm = next(item for item in client._stripe_http.posts if item["url"].endswith("/confirm"))
+    fields = parse_qs(str(confirm["data"] or ""))
+    assert fields["expected_amount"] == ["2000"]
+    assert checkout_requires_approval(payload) is True
+    assert checkout_requires_approval({"status": "open"}) is False
+
+
+def test_expected_amount_minor_reads_stripe_init_shapes() -> None:
+    assert expected_amount_minor({"total_summary": {"due": 22000}}) == 22000
+    assert expected_amount_minor({"invoice": {"amount_due": 16800}}) == 16800
+    assert expected_amount_minor({"session": {"amount_total": 3000}}) == 3000
+    assert expected_amount_minor({"init_checksum": "chk"}) is None
+
+
+def test_confirm_checkout_cs_live_requires_expected_amount(monkeypatch: pytest.MonkeyPatch) -> None:
+    _allow_sentinel(monkeypatch)
+
+    class _NoAmountHttp:
+        headers: dict = {}
+        posts: list = []
+
+        def post(self, url: str, **kwargs):
+            self.posts.append({"url": url, "data": kwargs.get("data")})
+            if url.endswith("/init"):
+                return _FakeResponse(payload={"init_checksum": "chk_1"})
+            raise AssertionError("confirm must not run without expected_amount")
+
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp("")
+    client._stripe_http = _NoAmountHttp()
+    with pytest.raises(DomainError) as exc:
+        client.confirm_checkout(
+            checkout_session_id="cs_live_abc123",
+            confirm_token="ctoken_1",
+            publishable_key="pk_test_liveish",
+        )
+    assert "expected_amount" in str(exc.value)
+    assert not any(item["url"].endswith("/confirm") for item in client._stripe_http.posts)
+
+
+def test_finalize_stripe_custom_checkout_approves_and_polls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_sentinel(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp("")
+    client._stripe_http = _StripeHttp()
+    confirmed = client.confirm_checkout(
+        checkout_session_id="cs_live_abc123",
+        confirm_token="ctoken_1",
+        publishable_key="pk_test_liveish",
+    )
+    assert checkout_requires_approval(confirmed) is True
+    final = client.finalize_stripe_custom_checkout(
+        checkout_session_id="cs_live_abc123",
+        publishable_key="pk_test_liveish",
+        confirmed=confirmed,
+        attempts=2,
+        interval=0,
+    )
+    assert any("/payments/checkout/approve" in item["url"] for item in client._http.posts)
+    assert client._stripe_http.gets
+    assert final["status"] == "complete"
+    intent_id, secret, _return_url = payment_intent_from_confirm(final)
+    assert intent_id == "pi_1"
+    assert secret == "pi_1_secret_x"
+
+
+def test_payment_intent_from_confirm_accepts_string_id() -> None:
+    intent_id, secret, _return_url = payment_intent_from_confirm({"payment_intent": "pi_only"})
+    assert intent_id == "pi_only"
+    assert secret == ""
+
+
+def test_payment_intent_from_payment_page_ignores_cs_id() -> None:
+    intent_id, secret, return_url = payment_intent_from_confirm(
+        {
+            "id": "cs_live_1",
+            "status": "complete",
+            "return_url": "https://chatgpt.com/checkout/verify?stripe_session_id=cs_live_1",
+            "payment_intent": {
+                "id": "pi_nested",
+                "client_secret": "pi_nested_secret_zz",
+                "status": "succeeded",
+            },
+        }
+    )
+    assert intent_id == "pi_nested"
+    assert secret == "pi_nested_secret_zz"
+    assert "checkout/verify" in return_url

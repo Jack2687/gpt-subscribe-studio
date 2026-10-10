@@ -255,7 +255,21 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
     if secrets is None:
         raise _error(status.HTTP_401_UNAUTHORIZED, ErrorCode.SESSION_EXPIRED, "session 已过期，请重新提交")
 
+    if payload.billing is not None:
+        custom = {k: v.strip() for k, v in payload.billing.model_dump().items()}
+        custom["country"] = custom["country"].upper()
+        if custom["country"] != order.billing_country:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                ErrorCode.BILLING_COUNTRY_MISMATCH,
+                f"账单地址国家 {custom['country']} 与订单地区 {order.billing_country} 不一致",
+            )
+        secrets.billing = custom
+        vault.put(order_id, secrets)
+
     view = store.view(order_id)
+    if payload.billing is not None:
+        view.billing = dict(secrets.billing)
     pipeline = build_pipeline()
     store.update_status(order_id, OrderStatus.PAYING)
     try:

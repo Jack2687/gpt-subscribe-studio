@@ -316,3 +316,14 @@ summary { cursor: pointer; font-weight: 600; color: var(--ink); }
     transition: none;
   }
 }
+
+.result { margin: 16px 0; padding: 12px 16px; border-radius: 8px; border: 1px solid #8884; }
+.result-ok { border-color: #2e9e5b; background: #2e9e5b14; }
+.result-fail { border-color: #d64545; background: #d6454514; }
+.history { margin-top: 24px; }
+.history ul { list-style: none; padding: 0; margin: 8px 0 0; }
+.history li { padding: 8px 0; border-top: 1px solid #8883; }
+.history .h-ok strong { color: #2e9e5b; }
+.history .h-fail strong { color: #d64545; }
+.history .h-error { color: #d64545; font-size: 0.9em; margin-top: 2px; }
+.history .h-id { font-size: 0.8em; opacity: 0.7; }

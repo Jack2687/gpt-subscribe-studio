@@ -1,19 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   createOrder,
   formatAmount,
+  getOrder,
   isHostedOrder,
   payOrder,
   verifyOrder,
+  type BillingInput,
   type Order,
   type Plan,
 } from "../api/client";
+import { isSettled, loadHistory, recordOrder, SUCCESS_STATUSES } from "../api/history";
 import { StripeCardFields, type StripeCardHandle } from "../card-payment/CardFields";
-
-interface Props {
-  onCreated: (orderId: string) => void;
-}
+import { HistoryList, ResultPanel } from "./ResultPanel";
 
 const FAMILIES: { id: "plus" | "go" | "pro" | "team"; label: string; hint: string }[] = [
   { id: "plus", label: "Plus", hint: "官方 Plus" },
@@ -67,7 +67,7 @@ const REGIONS: { code: string; label: string }[] = [
   { code: "ZA", label: "南非" },
 ];
 
-export function OrderNew({ onCreated }: Props) {
+export function OrderNew() {
   const [plan, setPlan] = useState<Plan>("plus");
   const [country, setCountry] = useState("");
   const [session, setSession] = useState("");
@@ -76,11 +76,44 @@ export function OrderNew({ onCreated }: Props) {
   const [promoCode, setPromoCode] = useState("");
   const [interval, setInterval] = useState<"month" | "year">("month");
   const [order, setOrder] = useState<Order | null>(null);
+  const [result, setResult] = useState<Order | null>(null);
+  const [history, setHistory] = useState(loadHistory);
+  const [addr, setAddr] = useState<BillingInput | null>(null);
   const [card, setCard] = useState<StripeCardHandle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const due = order ? formatAmount(order.amount, order.currency) : null;
   const hosted = order ? isHostedOrder(order) : plan === "team";
+
+  function finish(next: Order) {
+    setResult(next);
+    setHistory(recordOrder(next));
+  }
+
+  function reset() {
+    setOrder(null);
+    setResult(null);
+    setCard(null);
+    setAddr(null);
+    setSession("");
+    setError(null);
+  }
+
+  // 支付后状态还没定（3DS、确认订阅中）时在原页面轮询，直到成功或失败。
+  useEffect(() => {
+    if (!result || isSettled(result.status)) return;
+    const id = result.id;
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await getOrder(id);
+        setResult(next);
+        if (isSettled(next.status)) setHistory(recordOrder(next));
+      } catch {
+        /* keep polling */
+      }
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [result]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -113,14 +146,22 @@ export function OrderNew({ onCreated }: Props) {
           throw new Error("结账已创建，但没有拿到 Stripe 公钥，无法加载安全输入框。");
         }
         setOrder(created);
+        setAddr({
+          name: created.billing?.name ?? "",
+          line1: created.billing?.line1 ?? "",
+          city: created.billing?.city ?? "",
+          state: created.billing?.state ?? "",
+          postal_code: created.billing?.postal_code ?? "",
+          country: created.billing?.country ?? created.billing_country,
+        });
         setSession("");
         return;
       }
       if (isHostedOrder(order)) {
         const checked = await verifyOrder(order.id);
         setOrder(checked);
-        if (checked.subscription?.active || checked.status === "delivered") {
-          onCreated(checked.id);
+        if (checked.subscription?.active || SUCCESS_STATUSES.includes(checked.status)) {
+          finish(checked);
         } else {
           setError(checked.last_error || "还没开通。请先打开长链完成支付，再点查询。");
         }
@@ -130,13 +171,18 @@ export function OrderNew({ onCreated }: Props) {
         setError("Stripe 安全输入框还没准备好，请稍等几秒再试。");
         return;
       }
-      if (!order.billing?.line1 || !order.billing.postal_code) {
-        setError("结账已创建，但没有生成账单地址，请重试创建结账。");
+      if (!addr || !addr.name.trim() || !addr.line1.trim() || !addr.city.trim() || !addr.postal_code.trim()) {
+        setError("请填写完整账单地址（姓名、街道、城市、邮编）。");
         return;
       }
-      const token = await card.tokenize(order.billing);
-      const paid = await payOrder(order.id, token);
-      onCreated(paid.id);
+      const token = await card.tokenize(addr);
+      try {
+        finish(await payOrder(order.id, token, addr));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "开通失败";
+        const latest = await getOrder(order.id).catch(() => order);
+        finish({ ...latest, status: isSettled(latest.status) ? latest.status : "failed", last_error: message });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "开通失败");
     } finally {
@@ -303,13 +349,43 @@ export function OrderNew({ onCreated }: Props) {
             </button>
           </div>
         </fieldset>
-      ) : order ? (
+      ) : order && !result ? (
         <fieldset disabled={busy}>
           <legend>卡片（Stripe 安全输入框）</legend>
           <p className="ok">
             结账已创建（{order.billing_country}
-            {order.currency ? ` · ${order.currency}` : ""}）。账单地址已按这个国家生成，请只填卡。
+            {order.currency ? ` · ${order.currency}` : ""}）。下面的账单地址是自动生成的示例，用自己的真实卡请改成卡的账单地址（要和发卡行登记的一致）。
           </p>
+          {addr && (
+            <div className="billing-fields">
+              <label>
+                持卡人姓名
+                <input value={addr.name} onChange={(e) => setAddr({ ...addr, name: e.target.value })} />
+              </label>
+              <label>
+                街道地址
+                <input value={addr.line1} onChange={(e) => setAddr({ ...addr, line1: e.target.value })} />
+              </label>
+              <div className="row">
+                <label>
+                  城市
+                  <input value={addr.city} onChange={(e) => setAddr({ ...addr, city: e.target.value })} />
+                </label>
+                <label>
+                  州 / 省
+                  <input value={addr.state} onChange={(e) => setAddr({ ...addr, state: e.target.value })} />
+                </label>
+                <label>
+                  邮编
+                  <input
+                    value={addr.postal_code}
+                    onChange={(e) => setAddr({ ...addr, postal_code: e.target.value })}
+                  />
+                </label>
+              </div>
+              <p className="hint">国家固定为 {addr.country}，需和所选地区一致。</p>
+            </div>
+          )}
           {due ? (
             <p className="amount">
               应付金额 <strong>{due}</strong>
@@ -335,11 +411,13 @@ export function OrderNew({ onCreated }: Props) {
         </p>
       )}
 
-      {error && (
+      {result && <ResultPanel order={result} onReset={reset} />}
+      {error && !result && (
         <p className="alert" role="alert">
           {error}
         </p>
       )}
+      {!(result && !hosted) && (
       <div className="actions">
         <button
           type="submit"
@@ -361,6 +439,8 @@ export function OrderNew({ onCreated }: Props) {
                 : "创建结账"}
         </button>
       </div>
+      )}
+      <HistoryList items={history} />
     </form>
   );
 }

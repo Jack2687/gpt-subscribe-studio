@@ -111,3 +111,62 @@ def test_missing_session_is_401() -> None:
         json={"plan": "plus", "billing_country": "US", "mode": {"account_source": "customer_session"}},
     )
     assert res.status_code == 401
+
+
+def _create_us_order(client: TestClient) -> str:
+    created = client.post(
+        "/api/orders",
+        json={
+            "plan": "plus",
+            "billing_country": "US",
+            "session": '{"accessToken":"fake-session"}',
+        },
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+def test_pay_uses_manual_billing_address() -> None:
+    store.clear()
+    client = TestClient(create_app())
+    order_id = _create_us_order(client)
+    manual = {
+        "name": "Jane Roe",
+        "line1": "1 Main St",
+        "city": "Austin",
+        "state": "TX",
+        "postal_code": "73301",
+        "country": "us",
+    }
+
+    paid = client.post(
+        f"/api/orders/{order_id}/pay",
+        json={"payment_method_token": "pm_fake", "billing": manual},
+    )
+
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["billing"]["line1"] == "1 Main St"
+    assert paid.json()["billing"]["country"] == "US"
+
+
+def test_pay_rejects_billing_country_mismatch() -> None:
+    store.clear()
+    client = TestClient(create_app())
+    order_id = _create_us_order(client)
+
+    resp = client.post(
+        f"/api/orders/{order_id}/pay",
+        json={
+            "payment_method_token": "pm_fake",
+            "billing": {
+                "name": "Jane Roe",
+                "line1": "1 Chome",
+                "city": "Tokyo",
+                "state": "",
+                "postal_code": "150-0002",
+                "country": "JP",
+            },
+        },
+    )
+
+    assert resp.status_code == 400, resp.text

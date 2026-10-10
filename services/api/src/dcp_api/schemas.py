@@ -26,8 +26,18 @@ class OrderCreateRequest(BaseModel):
     price_interval: str = "month"
 
 
+class BillingIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    line1: str = Field(min_length=1, max_length=200)
+    city: str = Field(min_length=1, max_length=100)
+    state: str = Field(default="", max_length=100)
+    postal_code: str = Field(min_length=1, max_length=20)
+    country: str = Field(min_length=2, max_length=2)
+
+
 class OrderPayRequest(BaseModel):
     payment_method_token: str
+    billing: Optional[BillingIn] = None
 
 
 class SubscriptionOut(BaseModel):

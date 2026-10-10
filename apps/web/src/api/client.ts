@@ -68,11 +68,24 @@ export async function createOrder(input: {
   return (await res.json()) as Order;
 }
 
-export async function payOrder(orderId: string, paymentMethodToken: string): Promise<Order> {
+export interface BillingInput {
+  name: string;
+  line1: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country: string;
+}
+
+export async function payOrder(
+  orderId: string,
+  paymentMethodToken: string,
+  billing?: BillingInput,
+): Promise<Order> {
   const res = await fetch(`/api/orders/${orderId}/pay`, {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ payment_method_token: paymentMethodToken }),
+    body: JSON.stringify({ payment_method_token: paymentMethodToken, billing }),
   });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as Order;

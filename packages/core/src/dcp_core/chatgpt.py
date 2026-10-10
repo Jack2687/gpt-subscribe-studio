@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -32,6 +33,10 @@ _CHROME = (
 _SEC_CH_UA = '"Google Chrome";v="136", "Not.A/Brand";v="8", "Chromium";v="136"'
 
 STRIPE_API_VERSION = "2025-03-31.basil"
+STRIPE_CHECKOUT_API_VERSION = (
+    "2025-03-31.basil; checkout_server_update_beta=v1; "
+    "checkout_manual_approval_preview=v1"
+)
 logger = logging.getLogger("dcp.chatgpt")
 _PLAN_NAME = {
     "plus": "chatgptplusplan",
@@ -66,6 +71,7 @@ _HOSTED_CHECKOUT_FRAGMENT = (
     "z8ndmxrYmlgWmxxYGgnKSdga2RnaWBVaWRmYG1qaWFgd3YnP3F3cGB4JSUl"
 )
 _CS_ID = re.compile(r"cs_(?:live|test)_[A-Za-z0-9]+")
+_OAICS_ID = re.compile(r"oaics_[A-Za-z0-9]+")
 
 
 def clamp_team_seats(value: Any) -> int:
@@ -80,19 +86,37 @@ def clamp_team_seats(value: Any) -> int:
     return seats
 
 
-def stripe_checkout_id(*blobs: Any) -> str:
+def _first_id(pattern: re.Pattern[str], *blobs: Any) -> str:
     for blob in blobs:
         if isinstance(blob, dict):
             for value in _walk(blob):
                 if isinstance(value, str):
-                    match = _CS_ID.search(value)
+                    match = pattern.search(value)
                     if match:
                         return match.group(0)
         elif isinstance(blob, str):
-            match = _CS_ID.search(blob)
+            match = pattern.search(blob)
             if match:
                 return match.group(0)
     return ""
+
+
+def stripe_checkout_id(*blobs: Any) -> str:
+    return _first_id(_CS_ID, *blobs)
+
+
+def openai_internal_checkout_id(*blobs: Any) -> str:
+    """ChatGPT `/payments/checkout/confirm` 只接受内部 oaics_ 会话。"""
+    return _first_id(_OAICS_ID, *blobs)
+
+
+def public_checkout_id(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("http"):
+        text = text.rstrip("/").split("/")[-1]
+    return text.split("?")[0].split("#")[0]
 
 
 def stripe_verify_url(
@@ -477,6 +501,11 @@ class ChatGPTClient:
             )
         if "already paid" in lowered:
             raise DomainError(code, f"{prefix}: 该账号已是付费订阅")
+        if "only for internal checkout sessions" in lowered:
+            raise DomainError(
+                code,
+                "ChatGPT 内部确认只接受 oaics_ 会话。当前是 Stripe cs_ 自定义结账，不能调用 /payments/checkout/confirm。",
+            )
         if status == 403:
             raise DomainError(code, f"{prefix}: 被拦截（HTTP 403），请检查出口代理是否可用")
         if status >= 500:
@@ -555,26 +584,27 @@ class ChatGPTClient:
             self._raise(ErrorCode.CHECKOUT_UPSTREAM_ERROR, response, "创建结账")
         payload = _json(response)
         raw_url = str(payload.get("url") or payload.get("checkout_url") or "").strip()
-        checkout_id = str(
+        checkout_id = public_checkout_id(
             payload.get("checkout_session_id") or payload.get("session_id") or payload.get("id") or ""
-        ).strip()
+        )
         stripe_id = stripe_checkout_id(payload, raw_url, checkout_id)
+        internal_id = openai_internal_checkout_id(payload, raw_url, checkout_id)
         if hosted:
             url = hosted_checkout_url(raw_url, stripe_id or checkout_id)
             if not url:
                 raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR, "未拿到 Team 托管长链")
-            session_id = stripe_id or (
-                checkout_id if not checkout_id.startswith("http") else checkout_id.rstrip("/").split("/")[-1]
-            )
+            session_id = stripe_id or checkout_id
         else:
-            if not checkout_id:
+            # 官方晚间 SPA 常把 cs_live 放在顶层 id；内部 confirm 仍要 oaics_（若响应里有）。
+            session_id = internal_id or checkout_id or stripe_id
+            if not session_id:
                 raise DomainError(
                     ErrorCode.CHECKOUT_UPSTREAM_ERROR,
                     f"结账响应缺少 session id: {redact_sensitive(str(payload)[:240])}",
                 )
             processor = str(payload.get("processor_entity") or _processor(country))
-            url = checkout_id if checkout_id.startswith("http") else f"{APP_BASE}/checkout/{processor}/{checkout_id}"
-            session_id = checkout_id if not checkout_id.startswith("http") else checkout_id.rstrip("/").split("/")[-1]
+            path_id = stripe_id if (session_id.startswith("oaics_") and stripe_id) else session_id
+            url = raw_url if raw_url.startswith("http") else f"{APP_BASE}/checkout/{processor}/{path_id}"
         processor = str(payload.get("processor_entity") or _processor(country))
         confirm_return = str(payload.get("confirm_return_url") or "").strip()
         if not hosted and not confirm_return:
@@ -763,14 +793,26 @@ class ChatGPTClient:
         billing: Optional[Dict[str, str]] = None,
         processor_entity: str = "",
         currency: str = "",
+        publishable_key: str = "",
     ) -> Dict[str, Any]:
-        page_url = checkout_url or f"{APP_BASE}/checkout/{checkout_session_id}"
+        session_id = public_checkout_id(checkout_session_id)
+        if session_id.startswith("cs_"):
+            return self.confirm_stripe_custom_checkout(
+                checkout_session_id=session_id,
+                publishable_key=publishable_key,
+                confirmation_token=confirm_token,
+                return_url=stripe_verify_url(
+                    session_id,
+                    processor=processor_entity or _processor_from_checkout_url(checkout_url),
+                ),
+            )
+        page_url = checkout_url or f"{APP_BASE}/checkout/{session_id}"
         self.mint_sentinel(flow="checkout_session_approval", page_url=page_url)
         processor = processor_entity or _processor_from_checkout_url(checkout_url)
         self.http.post(
             f"{APP_BASE}/backend-api/payments/checkout/taxes",
             json=_taxes_body(
-                checkout_id=checkout_session_id,
+                checkout_id=session_id,
                 billing=billing,
                 processor=processor,
                 currency=currency,
@@ -781,7 +823,7 @@ class ChatGPTClient:
         try:
             self.http.post(
                 f"{APP_BASE}/backend-api/payments/checkout/update_tax_id",
-                json={"checkout_session_id": checkout_session_id, "tax_id_info": None},
+                json={"checkout_session_id": session_id, "tax_id_info": None},
                 headers=self._route_headers(
                     "/backend-api/payments/checkout/update_tax_id", page_url=page_url
                 ),
@@ -792,7 +834,7 @@ class ChatGPTClient:
         response = self.http.post(
             f"{APP_BASE}/backend-api/payments/checkout/confirm",
             json={
-                "checkout_session_id": checkout_session_id,
+                "checkout_session_id": session_id,
                 "confirm_token": confirm_token,
                 "selected_payment_method_type": "card",
             },
@@ -808,6 +850,211 @@ class ChatGPTClient:
             payload.get("type") or "",
             bool(payload.get("client_secret")),
         )
+        return payload
+
+    def confirm_stripe_custom_checkout(
+        self,
+        *,
+        checkout_session_id: str,
+        publishable_key: str,
+        confirmation_token: str,
+        return_url: str = "",
+    ) -> Dict[str, Any]:
+        """官方晚间 Plus/Go/Pro SPA：cs_live 走 Stripe payment_pages，不能 POST ChatGPT confirm。"""
+        session_id = public_checkout_id(checkout_session_id)
+        pk = str(publishable_key or "").strip()
+        token = str(confirmation_token or "").strip()
+        if not session_id.startswith("cs_"):
+            raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "Stripe Custom Checkout 需要 cs_ 会话")
+        if not pk.startswith(("pk_live_", "pk_test_")):
+            raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少 Stripe 公钥")
+        if not token.startswith("ctoken_"):
+            raise DomainError(ErrorCode.PAYMENT_DECLINED, "缺少 confirmation token")
+        init_payload = self._post_stripe_form(
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}/init",
+            {
+                "browser_locale": self.language or "en-US",
+                "browser_timezone": self.timezone or "America/New_York",
+                "elements_session_client[elements_init_source]": "custom_checkout",
+                "elements_session_client[referrer_host]": "chatgpt.com",
+                "elements_session_client[stripe_js_id]": str(uuid.uuid4()),
+                "elements_session_client[locale]": str((self.language or "en-US").split("-")[0] or "en"),
+                "elements_session_client[is_aggregation_expected]": "false",
+                "key": pk,
+                "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            },
+        )
+        confirm_body: Dict[str, str] = {
+            "key": pk,
+            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            "confirmation_token": token,
+            "expected_payment_method_type": "card",
+            "return_url": return_url or stripe_verify_url(session_id),
+            "consent[terms_of_service]": "accepted",
+        }
+        checksum = str(init_payload.get("init_checksum") or "")
+        if checksum:
+            confirm_body["init_checksum"] = checksum
+        minor = expected_amount_minor(init_payload)
+        if minor is None:
+            raise DomainError(
+                ErrorCode.PAYMENT_UNKNOWN_STATE,
+                "Stripe 确认缺少应付金额（expected_amount）。请重新创建结账后再确认。",
+            )
+        confirm_body["expected_amount"] = str(minor)
+        payload = self._post_stripe_form(
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}/confirm",
+            confirm_body,
+        )
+        logger.info(
+            "stripe_payment_page_confirm status=%s submission=%s has_pi=%s",
+            payload.get("status") or "",
+            submission_state(payload),
+            bool(_intent_object(payload)),
+        )
+        return payload
+
+    def finalize_stripe_custom_checkout(
+        self,
+        *,
+        checkout_session_id: str,
+        publishable_key: str,
+        checkout_url: str = "",
+        processor_entity: str = "",
+        confirmed: Optional[Dict[str, Any]] = None,
+        attempts: int = 12,
+        interval: float = 0.8,
+    ) -> Dict[str, Any]:
+        """cs_live confirm 之后：ChatGPT approve（requires_approval）再轮询 payment_pages。"""
+        page = dict(confirmed or {})
+        if checkout_requires_approval(page):
+            approved = self.approve_checkout(
+                checkout_session_id=checkout_session_id,
+                processor_entity=processor_entity,
+                checkout_url=checkout_url,
+            )
+            logger.info(
+                "checkout_approve result=%s status=%s",
+                approved.get("result") or "",
+                approved.get("status") or "",
+            )
+            if checkout_confirm_blocked(approved):
+                page["status"] = str(approved.get("status") or "blocked")
+                page["result"] = str(approved.get("result") or "blocked")
+                extra = checkout_confirm_message(approved)
+                if extra:
+                    page["message"] = extra
+                return page
+        if payment_page_settled(page):
+            return page
+        polled = self.poll_payment_page(
+            checkout_session_id=checkout_session_id,
+            publishable_key=publishable_key,
+            attempts=attempts,
+            interval=interval,
+        )
+        return polled or page
+
+    def poll_payment_page(
+        self,
+        *,
+        checkout_session_id: str,
+        publishable_key: str,
+        attempts: int = 12,
+        interval: float = 0.8,
+    ) -> Dict[str, Any]:
+        session_id = public_checkout_id(checkout_session_id)
+        pk = str(publishable_key or "").strip()
+        getter = getattr(self.stripe_http, "get", None)
+        if not session_id.startswith("cs_") or not callable(getter):
+            return {}
+        params = {
+            "key": pk,
+            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            "elements_session_client[elements_init_source]": "custom_checkout",
+            "elements_session_client[referrer_host]": "chatgpt.com",
+            "elements_session_client[locale]": str((self.language or "en-US").split("-")[0] or "en"),
+            "elements_session_client[is_aggregation_expected]": "false",
+        }
+        last: Dict[str, Any] = {}
+        for _ in range(max(1, attempts)):
+            response = getter(
+                f"{STRIPE_BASE}/v1/payment_pages/{session_id}",
+                params=params,
+                timeout=self.timeout,
+            )
+            status = int(getattr(response, "status_code", 0) or 0)
+            payload = _json(response)
+            if status < 400 and payload:
+                last = payload
+                logger.info(
+                    "stripe_payment_page_poll status=%s submission=%s has_pi=%s",
+                    payload.get("status") or "",
+                    submission_state(payload),
+                    bool(_intent_object(payload)),
+                )
+                if submission_state(payload) in {"failed", "declined", "canceled", "cancelled"}:
+                    attempt = payload.get("submission_attempt")
+                    logger.warning(
+                        "stripe_submission_failed detail=%s attempt_keys=%s",
+                        submission_failure_detail(payload) or "-",
+                        sorted(attempt) if isinstance(attempt, dict) else [],
+                    )
+                if payment_page_settled(payload):
+                    return payload
+            if interval > 0:
+                time.sleep(interval)
+        return last
+
+    def approve_checkout(
+        self,
+        *,
+        checkout_session_id: str,
+        processor_entity: str = "",
+        checkout_url: str = "",
+    ) -> Dict[str, Any]:
+        session_id = public_checkout_id(checkout_session_id)
+        processor = processor_entity or _processor_from_checkout_url(checkout_url) or _processor("")
+        page_url = checkout_url or f"{APP_BASE}/checkout/{processor}/{session_id}"
+        self.mint_sentinel(flow="checkout_session_approval", page_url=page_url)
+        headers = self._route_headers("/backend-api/payments/checkout/approve", page_url=page_url)
+        headers["x-oai-is-client-observation"] = "true"
+        response = self.http.post(
+            f"{APP_BASE}/backend-api/payments/checkout/approve",
+            json={"checkout_session_id": session_id, "processor_entity": processor},
+            headers=headers,
+            timeout=self.timeout,
+        )
+        if int(getattr(response, "status_code", 0) or 0) >= 400:
+            self._raise(ErrorCode.PAYMENT_UNKNOWN_STATE, response, "批准结账")
+        return _json(response)
+
+    def _post_stripe_form(self, url: str, body: Dict[str, str]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        status = 0
+        data = dict(body)
+        for _ in range(8):
+            response = self.stripe_http.post(
+                url,
+                data=urlencode(data),
+                timeout=self.timeout,
+            )
+            payload = _json(response)
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status != 400:
+                break
+            unknown = _stripe_unknown_param(payload)
+            if not unknown:
+                break
+            removed = False
+            for key in list(data):
+                if key == unknown or key.startswith(unknown + "["):
+                    data.pop(key, None)
+                    removed = True
+            if not removed:
+                break
+        if status >= 400:
+            _raise_stripe(payload, status)
         return payload
 
     def confirm_stripe_intent(
@@ -983,11 +1230,210 @@ def checkout_confirm_blocked_advice(country: str = "") -> str:
 
 
 def payment_intent_from_confirm(payload: Dict[str, Any]) -> tuple[str, str, str]:
-    """ChatGPT checkout/confirm 成功时返回 status=success + pi client_secret，没有顶层 id。"""
-    secret = str(payload.get("client_secret") or "")
-    intent_id = str(payload.get("id") or "") or intent_id_from_secret(secret)
-    return_url = str(payload.get("confirm_return_url") or "")
+    """ChatGPT checkout/confirm 成功时返回 status=success + pi client_secret，没有顶层 id。
+
+    Stripe payment_pages/confirm 则把 PaymentIntent 嵌在 ``payment_intent`` 里，
+    批准前也可能只给 ``pi_`` 字符串。
+    """
+    nested = _intent_object(payload)
+    secret = str(payload.get("client_secret") or nested.get("client_secret") or "")
+    intent_id = str(nested.get("id") or "")
+    raw = payload.get("payment_intent")
+    if not intent_id and isinstance(raw, str) and raw.startswith("pi_"):
+        intent_id = raw
+    if intent_id.startswith("cs_"):
+        intent_id = ""
+    intent_id = intent_id or intent_id_from_secret(secret)
+    return_url = str(payload.get("confirm_return_url") or payload.get("return_url") or "")
     return intent_id, secret, return_url
+
+
+def submission_state(payload: Dict[str, Any]) -> str:
+    attempt = payload.get("submission_attempt") if isinstance(payload.get("submission_attempt"), dict) else {}
+    return str(attempt.get("state") or attempt.get("status") or "").strip().lower()
+
+
+_FAILURE_KEYS = ("decline_code", "code", "message", "reason", "failure_reason", "failure_code", "type")
+
+
+def _failure_parts(source: Any) -> list[str]:
+    if isinstance(source, str):
+        return [source.strip()] if source.strip() else []
+    if not isinstance(source, dict):
+        return []
+    parts: list[str] = []
+    for key in _FAILURE_KEYS:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(f"{key}={value.strip()}")
+    return parts
+
+
+def submission_failure_detail(payload: Dict[str, Any]) -> str:
+    """从失败的 Stripe 响应里尽量找出拒绝原因（decline_code / last_payment_error 等）。"""
+    attempt = payload.get("submission_attempt") if isinstance(payload.get("submission_attempt"), dict) else {}
+    nested = _intent_object(payload)
+    sources = [
+        attempt.get("error"),
+        attempt.get("last_error"),
+        attempt.get("failure"),
+        attempt,
+        payload.get("last_payment_error"),
+        nested.get("last_payment_error"),
+        payload.get("error"),
+    ]
+    seen: list[str] = []
+    for source in sources:
+        for part in _failure_parts(source):
+            if part not in seen:
+                seen.append(part)
+    return "; ".join(seen[:6])
+
+
+def checkout_requires_approval(payload: Dict[str, Any]) -> bool:
+    return submission_state(payload) in {"requires_approval", "pending_approval"}
+
+
+def nested_intent_status(payload: Dict[str, Any]) -> str:
+    nested = _intent_object(payload)
+    return str(nested.get("status") or "").strip().lower()
+
+
+def payment_page_settled(payload: Dict[str, Any]) -> bool:
+    status = str(payload.get("status") or "").strip().lower()
+    state = submission_state(payload)
+    pi_status = nested_intent_status(payload)
+    if status in {"complete", "completed", "expired"}:
+        return True
+    if state in {"succeeded", "complete", "completed", "failed", "declined", "canceled", "cancelled"}:
+        return True
+    if pi_status in {
+        "succeeded",
+        "processing",
+        "requires_action",
+        "requires_payment_method",
+        "canceled",
+        "cancelled",
+    }:
+        return True
+    return False
+
+
+def _intent_object(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    for key in ("payment_intent", "setup_intent"):
+        value = payload.get(key)
+        if isinstance(value, dict) and (
+            value.get("id") or value.get("client_secret") or value.get("status")
+        ):
+            return value
+    attempt = payload.get("submission_attempt")
+    if isinstance(attempt, dict):
+        nested = _intent_object(attempt)
+        if nested:
+            return nested
+    elements = payload.get("elements_session")
+    if isinstance(elements, dict):
+        nested = _intent_object(elements)
+        if nested:
+            return nested
+    return {}
+
+
+def expected_amount_minor(payload: Any) -> Optional[int]:
+    """Stripe payment_pages/confirm 的 expected_amount：应付整数（最小货币单位）。
+
+    init 响应里通常是 ``total_summary.due`` / ``invoice.amount_due``，不是顶层 amount_total。
+    """
+    if not isinstance(payload, dict):
+        return None
+    wrappers = (
+        payload,
+        payload.get("session") if isinstance(payload.get("session"), dict) else None,
+        payload.get("checkout_session") if isinstance(payload.get("checkout_session"), dict) else None,
+        payload.get("payment_page") if isinstance(payload.get("payment_page"), dict) else None,
+    )
+    for wrapper in wrappers:
+        if not isinstance(wrapper, dict):
+            continue
+        found = _expected_amount_from_object(wrapper)
+        if found is not None:
+            return found
+    return None
+
+
+def _as_minor_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool) or isinstance(value, (dict, list)):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        return int(value)
+    text = str(value).strip()
+    if not text or "." in text or "," in text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _expected_amount_from_object(payload: Dict[str, Any]) -> Optional[int]:
+    summary = payload.get("total_summary")
+    if isinstance(summary, dict):
+        for key in ("due", "amount_due", "total", "amount"):
+            found = _as_minor_int(summary.get(key))
+            if found is not None:
+                return found
+    invoice = payload.get("invoice")
+    if isinstance(invoice, dict):
+        for key in ("amount_due", "total", "amount_paid"):
+            found = _as_minor_int(invoice.get(key))
+            if found is not None:
+                return found
+    for key in ("amount_total", "amount_due", "checkout_amount_minor"):
+        found = _as_minor_int(payload.get(key))
+        if found is not None:
+            return found
+    total = payload.get("total")
+    if isinstance(total, dict):
+        nested = total.get("total") if isinstance(total.get("total"), dict) else None
+        if nested:
+            found = _as_minor_int(nested.get("minorUnitsAmount") or nested.get("due"))
+            if found is not None:
+                return found
+        for key in ("due", "minorUnitsAmount", "amount", "total"):
+            found = _as_minor_int(total.get(key))
+            if found is not None:
+                return found
+    items = payload.get("line_items") or payload.get("lineItems")
+    if isinstance(items, list):
+        running = 0
+        saw = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            found = _as_minor_int(item.get("amount") or item.get("amount_total"))
+            if found is None:
+                continue
+            running += found
+            saw = True
+        if saw:
+            return running
+    return None
+
+
+def _stripe_unknown_param(payload: Dict[str, Any]) -> str:
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    param = str(error.get("param") or "").strip()
+    if param:
+        return param
+    message = str(error.get("message") or payload.get("message") or "")
+    match = re.search(r"unknown parameter[:\s]+['\"]?([A-Za-z0-9_\[\]]+)", message, re.I)
+    return match.group(1) if match else ""
 
 
 def _raise_stripe(payload: Dict[str, Any], status: int) -> None:
@@ -1004,6 +1450,11 @@ def _raise_stripe(payload: Dict[str, Any], status: int) -> None:
         raise DomainError(
             ErrorCode.PAYMENT_UNKNOWN_STATE,
             "支付方式采集模式和确认接口不一致。请刷新页面后重新创建结账，不要用上一单的输入框。",
+        )
+    if "expected amount" in message.lower() and "has to be provided" in message.lower():
+        raise DomainError(
+            ErrorCode.PAYMENT_UNKNOWN_STATE,
+            "Stripe 确认缺少应付金额。请重新创建结账后再确认。",
         )
     if status == 402 or code == "card_declined" or decline:
         detail = decline or code or message
@@ -1064,10 +1515,17 @@ __all__ = [
     "CheckoutSession",
     "hosted_checkout_url",
     "stripe_checkout_id",
+    "openai_internal_checkout_id",
+    "public_checkout_id",
     "clamp_team_seats",
     "checkout_confirm_blocked",
     "checkout_confirm_blocked_advice",
     "checkout_confirm_message",
+    "checkout_requires_approval",
+    "payment_page_settled",
+    "submission_state",
+    "nested_intent_status",
+    "expected_amount_minor",
     "intent_id_from_secret",
     "jwt_account_id",
     "payment_intent_from_confirm",

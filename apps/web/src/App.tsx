@@ -1,11 +1,6 @@
-import { useState } from "react";
-
-import { OrderDetail } from "./pages/OrderDetail";
 import { OrderNew } from "./pages/OrderNew";
 
 export function App() {
-  const [orderId, setOrderId] = useState<string | null>(null);
-
   async function logout() {
     await fetch("/logout", { method: "POST" });
     window.location.href = "/login";
@@ -25,11 +20,7 @@ export function App() {
         </p>
       </header>
       <div className="card">
-        {orderId ? (
-          <OrderDetail orderId={orderId} onReset={() => setOrderId(null)} />
-        ) : (
-          <OrderNew onCreated={setOrderId} />
-        )}
+        <OrderNew />
       </div>
       <footer>
         <p>pay.example.com · 独立小工具，不依赖其它项目</p>
