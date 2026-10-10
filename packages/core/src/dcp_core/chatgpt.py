@@ -801,6 +801,54 @@ class ChatGPTClient:
             raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, redact_sensitive(message))
         return token
 
+    def _sync_billing_tax(
+        self,
+        *,
+        session_id: str,
+        page_url: str,
+        billing: Optional[Dict[str, str]],
+        processor: str,
+        currency: str,
+        strict: bool,
+    ) -> None:
+        self.mint_sentinel(flow="checkout_session_approval", page_url=page_url)
+        try:
+            response = self.http.post(
+                f"{APP_BASE}/backend-api/payments/checkout/taxes",
+                json=_taxes_body(
+                    checkout_id=session_id,
+                    billing=billing,
+                    processor=processor,
+                    currency=currency,
+                ),
+                headers=self._route_headers("/backend-api/payments/checkout/taxes", page_url=page_url),
+                timeout=self.timeout,
+            )
+            taxed = _json(response)
+            session = taxed.get("checkout_session") if isinstance(taxed.get("checkout_session"), dict) else {}
+            logger.info(
+                "checkout_taxes status=%s amount_total=%s billing_country=%s",
+                getattr(response, "status_code", 0),
+                session.get("amount_total"),
+                (billing or {}).get("country", ""),
+            )
+        except Exception as exc:
+            if strict:
+                raise
+            logger.warning("checkout_taxes 失败（继续确认）: %s", redact_sensitive(str(exc))[:200])
+            return
+        try:
+            self.http.post(
+                f"{APP_BASE}/backend-api/payments/checkout/update_tax_id",
+                json={"checkout_session_id": session_id, "tax_id_info": None},
+                headers=self._route_headers(
+                    "/backend-api/payments/checkout/update_tax_id", page_url=page_url
+                ),
+                timeout=self.timeout,
+            )
+        except Exception:
+            pass
+
     def confirm_checkout(
         self,
         *,
@@ -813,41 +861,24 @@ class ChatGPTClient:
         publishable_key: str = "",
     ) -> Dict[str, Any]:
         session_id = public_checkout_id(checkout_session_id)
+        page_url = checkout_url or f"{APP_BASE}/checkout/{session_id}"
+        processor = processor_entity or _processor_from_checkout_url(checkout_url)
+        # 浏览器在确认前总会按「实际账单地址」重算税费，否则 Stripe 报 checkout_upcoming_invoice_mismatch。
+        self._sync_billing_tax(
+            session_id=session_id,
+            page_url=page_url,
+            billing=billing,
+            processor=processor,
+            currency=currency,
+            strict=not session_id.startswith("cs_"),
+        )
         if session_id.startswith("cs_"):
             return self.confirm_stripe_custom_checkout(
                 checkout_session_id=session_id,
                 publishable_key=publishable_key,
                 confirmation_token=confirm_token,
-                return_url=stripe_verify_url(
-                    session_id,
-                    processor=processor_entity or _processor_from_checkout_url(checkout_url),
-                ),
+                return_url=stripe_verify_url(session_id, processor=processor),
             )
-        page_url = checkout_url or f"{APP_BASE}/checkout/{session_id}"
-        self.mint_sentinel(flow="checkout_session_approval", page_url=page_url)
-        processor = processor_entity or _processor_from_checkout_url(checkout_url)
-        self.http.post(
-            f"{APP_BASE}/backend-api/payments/checkout/taxes",
-            json=_taxes_body(
-                checkout_id=session_id,
-                billing=billing,
-                processor=processor,
-                currency=currency,
-            ),
-            headers=self._route_headers("/backend-api/payments/checkout/taxes", page_url=page_url),
-            timeout=self.timeout,
-        )
-        try:
-            self.http.post(
-                f"{APP_BASE}/backend-api/payments/checkout/update_tax_id",
-                json={"checkout_session_id": session_id, "tax_id_info": None},
-                headers=self._route_headers(
-                    "/backend-api/payments/checkout/update_tax_id", page_url=page_url
-                ),
-                timeout=self.timeout,
-            )
-        except Exception:
-            pass
         response = self.http.post(
             f"{APP_BASE}/backend-api/payments/checkout/confirm",
             json={

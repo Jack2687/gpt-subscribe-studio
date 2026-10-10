@@ -751,3 +751,41 @@ def test_approval_retry_only_without_payment_intent() -> None:
     assert _approval_retryable(with_pi) is False
     other = {"submission_attempt": {"state": "failed", "error": {"code": "card_declined"}}}
     assert _approval_retryable(other) is False
+
+
+def test_stripe_custom_confirm_syncs_billing_tax_first(monkeypatch) -> None:
+    from dcp_core.chatgpt import ChatGPTClient
+
+    calls: list[tuple[str, dict]] = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"checkout_session": {"amount_total": 15273}}
+
+    class _Http:
+        def post(self, url, json=None, headers=None, timeout=None):
+            calls.append((url.rsplit("/", 1)[-1], json or {}))
+            return _Resp()
+
+    client = ChatGPTClient(access_token="t")
+    client._http = _Http()
+    monkeypatch.setattr(client, "mint_sentinel", lambda **kw: None)
+    monkeypatch.setattr(
+        client, "confirm_stripe_custom_checkout", lambda **kw: calls.append(("stripe_confirm", {})) or {}
+    )
+    billing = {"name": "Jane Roe", "line1": "1 Main St", "city": "Austin", "state": "TX",
+               "postal_code": "73301", "country": "US"}
+
+    client.confirm_checkout(
+        checkout_session_id="cs_live_abc",
+        confirm_token="ctoken_x",
+        billing=billing,
+        currency="JPY",
+        publishable_key="pk_live_x",
+    )
+
+    assert [name for name, _ in calls] == ["taxes", "update_tax_id", "stripe_confirm"]
+    assert calls[0][1]["billing_address"]["postal_code"] == "73301"
+    assert calls[0][1]["billing_country"] == "US"
