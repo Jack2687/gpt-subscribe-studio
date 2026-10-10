@@ -31,6 +31,7 @@ class Plan(StrEnum):
     """订阅档位。"""
 
     PLUS = "plus"
+    GO = "go"
     PRO_LITE = "pro_lite"
     PRO = "pro"
     PRO_MAX = "pro_max"

@@ -78,6 +78,7 @@ def _to_out(order: Order) -> OrderOut:
         workspace_name=view.workspace_name,
         promo_code=view.promo_code,
         price_interval=view.price_interval,
+        confirm_return_url=view.confirm_return_url,
     )
 
 
@@ -210,6 +211,7 @@ async def create_order(
     view.amount = str(checkout.amount) if checkout.amount is not None else None
     view.currency = checkout.currency
     view.checkout_kind = checkout.checkout_kind or ("hosted" if plan is Plan.TEAM else "custom")
+    view.confirm_return_url = checkout.confirm_return_url or None
     if plan is Plan.TEAM:
         view.seat_quantity = seats
         view.workspace_name = workspace
@@ -268,6 +270,7 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
             checkout_proxy=secrets.proxy or None,
             approve_proxy=secrets.proxy or None,
             billing=secrets.billing or None,
+            plan=str(order.plan),
         )
     except DomainError as exc:
         store.update_status(order_id, OrderStatus.FAILED)

@@ -76,4 +76,4 @@ def test_mode_is_frozen_and_hashable() -> None:
 
 
 def test_plan_enum_covers_all_tiers() -> None:
-    assert {p.value for p in Plan} == {"plus", "pro_lite", "pro", "pro_max", "team"}
+    assert {p.value for p in Plan} == {"plus", "go", "pro_lite", "pro", "pro_max", "team"}

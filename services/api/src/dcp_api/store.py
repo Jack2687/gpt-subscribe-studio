@@ -27,6 +27,7 @@ class OrderView:
     workspace_name: Optional[str] = None
     promo_code: Optional[str] = None
     price_interval: Optional[str] = None
+    confirm_return_url: Optional[str] = None
 
 
 class InMemoryStore:

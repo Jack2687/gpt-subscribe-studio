@@ -20,6 +20,7 @@ from dcp_core.chatgpt import (
     payment_intent_from_confirm,
     setup_intent_from_payload,
     stripe_checkout_id,
+    stripe_verify_url,
 )
 from dcp_core.countries import country_codes, currency_for, is_supported
 from dcp_core.proxies import (
@@ -335,9 +336,15 @@ def test_create_checkout_sends_sentinel(monkeypatch: pytest.MonkeyPatch) -> None
     assert body["plan_name"] == "chatgptplusplan"
     assert body["checkout_source"] == "chatgpt_web_merged"
     assert body["purchase_attempt_id"]
+    assert body["cancel_url"] == "https://chatgpt.com/?cta_tab=personal"
+    assert created.processor_entity == "openai_llc"
+    assert created.checkout_url == "https://chatgpt.com/checkout/openai_llc/cs_test_1"
+    assert "stripe_session_id=cs_test_1" in created.confirm_return_url
+    assert "processor_entity=openai_llc" in created.confirm_return_url
+    assert "plan_type=plus" in created.confirm_return_url
 
 
-def test_create_checkout_maps_pro_max_to_chatgptpro(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_checkout_maps_pro_max_to_chatgptpromax(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "dcp_core.chatgpt.mint",
         lambda **kwargs: {
@@ -352,8 +359,29 @@ def test_create_checkout_maps_pro_max_to_chatgptpro(monkeypatch: pytest.MonkeyPa
     client._http = _FakeHttp("")
     created = client.create_checkout(plan="pro_max", country="US")
     assert created.checkout_session_id == "cs_test_1"
-    assert client._http.posts[0]["json"]["plan_name"] == "chatgptpro"
+    assert client._http.posts[0]["json"]["plan_name"] == "chatgptpromax"
     assert client._http.posts[0]["json"]["billing_details"]["country"] == "US"
+    assert "plan_type=promax" in created.confirm_return_url
+
+
+def test_create_checkout_jp_uses_openai_llc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "dcp_core.chatgpt.mint",
+        lambda **kwargs: {
+            "p": "pow",
+            "c": "chal",
+            "t": "turn",
+            "id": kwargs.get("device_id"),
+            "flow": kwargs.get("flow"),
+        },
+    )
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp("")
+    created = client.create_checkout(plan="pro_lite", country="JP")
+    assert created.processor_entity == "openai_llc"
+    assert created.checkout_url == "https://chatgpt.com/checkout/openai_llc/cs_test_1"
+    assert client._http.posts[0]["json"]["plan_name"] == "chatgptprolite"
+    assert "plan_type=prolite" in created.confirm_return_url
 
 
 def test_stripe_automatic_payment_methods_conflict_is_mapped() -> None:
@@ -422,6 +450,34 @@ def test_create_checkout_maps_team_seats_and_promo(monkeypatch: pytest.MonkeyPat
     assert body["billing_details"]["currency"] == "JPY"
     assert created.checkout_kind == "hosted"
     assert "pay.openai.com/c/pay/cs_test_1" in created.checkout_url
+
+
+def test_stripe_verify_url_matches_har_return_url() -> None:
+    url = stripe_verify_url("oaics_1", processor="openai_llc", plan="pro_lite")
+    assert url.startswith("https://chatgpt.com/checkout/verify?")
+    assert "stripe_session_id=oaics_1" in url
+    assert "processor_entity=openai_llc" in url
+    assert "source=chatgpt_web_merged" in url
+    assert "plan_type=prolite" in url
+
+
+def test_create_checkout_maps_go_to_chatgptgoplan(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "dcp_core.chatgpt.mint",
+        lambda **kwargs: {
+            "p": "pow",
+            "c": "chal",
+            "t": "turn",
+            "id": kwargs.get("device_id"),
+            "flow": kwargs.get("flow"),
+        },
+    )
+    client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
+    client._http = _FakeHttp("")
+    created = client.create_checkout(plan="go", country="US")
+    assert created.checkout_session_id == "cs_test_1"
+    assert client._http.posts[0]["json"]["plan_name"] == "chatgptgoplan"
+    assert "plan_type=go" in created.confirm_return_url
 
 
 def test_create_checkout_maps_go_lite_plan(monkeypatch: pytest.MonkeyPatch) -> None:

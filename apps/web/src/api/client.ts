@@ -1,4 +1,4 @@
-export type Plan = "plus" | "pro_lite" | "pro" | "pro_max" | "team";
+export type Plan = "plus" | "go" | "pro_lite" | "pro" | "pro_max" | "team";
 
 export interface Order {
   id: string;
@@ -26,6 +26,7 @@ export interface Order {
   workspace_name?: string | null;
   promo_code?: string | null;
   price_interval?: string | null;
+  confirm_return_url?: string | null;
 }
 
 const jsonHeaders = { "Content-Type": "application/json" };

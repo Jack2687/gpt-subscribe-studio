@@ -65,6 +65,14 @@ label { display: block; margin-bottom: 8px; font-weight: 600; }
   gap: 8px;
   margin-bottom: 14px;
 }
+.plan-tiers {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: -6px;
+  margin-bottom: 8px;
+}
+.plan-tiers .plan-btn {
+  min-height: 64px;
+}
 
 /*
   Plan / seat / CTA hover fills:

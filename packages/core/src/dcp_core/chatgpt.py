@@ -35,10 +35,25 @@ STRIPE_API_VERSION = "2025-03-31.basil"
 logger = logging.getLogger("dcp.chatgpt")
 _PLAN_NAME = {
     "plus": "chatgptplusplan",
+    "go": "chatgptgoplan",
     "pro_lite": "chatgptprolite",
     "pro": "chatgptpro",
-    "pro_max": "chatgptpro",
+    "pro_max": "chatgptpromax",
     "team": "chatgptteamplan",
+}
+_PLAN_TYPE = {
+    "plus": "plus",
+    "go": "go",
+    "pro_lite": "prolite",
+    "pro": "pro",
+    "pro_max": "promax",
+    "team": "team",
+    "chatgptplusplan": "plus",
+    "chatgptgoplan": "go",
+    "chatgptprolite": "prolite",
+    "chatgptpro": "pro",
+    "chatgptpromax": "promax",
+    "chatgptteamplan": "team",
 }
 
 # Stripe Checkout 托管页片段（公开 UI 状态，不是密钥）。Team 长链与 153 同源协议。
@@ -78,6 +93,29 @@ def stripe_checkout_id(*blobs: Any) -> str:
             if match:
                 return match.group(0)
     return ""
+
+
+def stripe_verify_url(
+    checkout_id: str,
+    *,
+    processor: str = "",
+    plan: str = "",
+    source: str = "chatgpt_web_merged",
+) -> str:
+    """HAR 里 PI confirm 的 return_url：/checkout/verify?stripe_session_id=oaics_…"""
+    session_id = str(checkout_id or "").strip().rstrip("/").split("/")[-1]
+    if session_id.startswith("http") or not session_id:
+        return f"{APP_BASE}/"
+    query = [f"stripe_session_id={session_id}"]
+    entity = str(processor or "").strip()
+    if entity and entity not in {"verify", "c", "pay"}:
+        query.append(f"processor_entity={entity}")
+    if source:
+        query.append(f"source={source}")
+    plan_type = _PLAN_TYPE.get(str(plan), "")
+    if plan_type:
+        query.append(f"plan_type={plan_type}")
+    return f"{APP_BASE}/checkout/verify?{'&'.join(query)}"
 
 
 def hosted_checkout_url(url: str = "", session_id: str = "") -> str:
@@ -133,7 +171,7 @@ def _checkout_body(
         "checkout_source": "chatgpt_web_merged",
         "supports_saved_payment_link": True,
         "checkout_appearance": "light",
-        "cancel_url": f"{APP_BASE}/",
+        "cancel_url": f"{APP_BASE}/?cta_tab=personal",
         "purchase_attempt_id": str(uuid.uuid4()),
         "checkout_ui_mode": "custom",
     }
@@ -160,6 +198,7 @@ class CheckoutSession:
     oai_session_id: str = ""
     customer_session_client_secret: str = ""
     checkout_kind: str = "custom"
+    confirm_return_url: str = ""
 
 
 def jwt_account_id(access_token: str) -> str:
@@ -537,6 +576,9 @@ class ChatGPTClient:
             url = checkout_id if checkout_id.startswith("http") else f"{APP_BASE}/checkout/{processor}/{checkout_id}"
             session_id = checkout_id if not checkout_id.startswith("http") else checkout_id.rstrip("/").split("/")[-1]
         processor = str(payload.get("processor_entity") or _processor(country))
+        confirm_return = str(payload.get("confirm_return_url") or "").strip()
+        if not hosted and not confirm_return:
+            confirm_return = stripe_verify_url(session_id, processor=processor, plan=plan)
         pk = str(payload.get("publishable_key") or payload.get("publishableKey") or "").strip()
         if not pk.startswith(("pk_live_", "pk_test_")):
             pk = "" if hosted else self._publishable_key()
@@ -577,6 +619,7 @@ class ChatGPTClient:
             oai_session_id=self.oai_session_id,
             customer_session_client_secret=customer_session,
             checkout_kind="hosted" if hosted else "custom",
+            confirm_return_url="" if hosted else confirm_return,
         )
 
     def _publishable_key(self) -> str:
@@ -597,10 +640,12 @@ class ChatGPTClient:
     def _quote_from_context(
         self, *, processor: str, checkout_id: str, page_url: str, currency: str
     ) -> tuple[Optional[Decimal], str]:
-        routes = [
-            f"/backend-api/payments/checkout/{processor}/{checkout_id}",
-            f"/backend-api/payments/checkout/{checkout_id}",
-        ]
+        entities: list[str] = []
+        for entity in (processor, "openai_llc", "openai_ie"):
+            if entity and entity not in entities:
+                entities.append(entity)
+        routes = [f"/backend-api/payments/checkout/{entity}/{checkout_id}" for entity in entities]
+        routes.append(f"/backend-api/payments/checkout/{checkout_id}")
         for route in routes:
             try:
                 response = self.http.get(
@@ -843,8 +888,9 @@ def _account_id(payload: Dict[str, Any]) -> str:
     return ""
 
 
-def _processor(country: str) -> str:
-    return "openai_llc" if country.upper() == "US" else "openai_ie"
+def _processor(_country: str) -> str:
+    # HAR：日本结账的 processor_entity 也是 openai_llc，不是 openai_ie。
+    return "openai_llc"
 
 
 def _processor_from_checkout_url(url: str) -> str:
@@ -1026,4 +1072,5 @@ __all__ = [
     "jwt_account_id",
     "payment_intent_from_confirm",
     "setup_intent_from_payload",
+    "stripe_verify_url",
 ]

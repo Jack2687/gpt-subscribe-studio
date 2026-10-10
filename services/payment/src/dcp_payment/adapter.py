@@ -15,6 +15,8 @@ from dcp_core.chatgpt import (
     checkout_confirm_blocked_advice,
     checkout_confirm_message,
     payment_intent_from_confirm,
+    stripe_verify_url,
+    _processor_from_checkout_url,
 )
 from dcp_core.countries import currency_for, locale_for, timezone_for
 from dcp_core.proxies import align_proxy_region, configured_proxy, session_proxy
@@ -96,7 +98,11 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
             )
         if intent_secret.startswith("pi_") or kind == "payment_intent" or intent_id.startswith("pi_"):
             if not return_url:
-                return_url = f"{APP_BASE}/checkout/verify?stripe_session_id={checkout_id}"
+                return_url = stripe_verify_url(
+                    checkout_id,
+                    processor=_processor_from_checkout_url(page_url),
+                    plan=str(req.plan or ""),
+                )
             final = client.confirm_stripe_intent(
                 intent_id=intent_id,
                 client_secret=intent_secret,

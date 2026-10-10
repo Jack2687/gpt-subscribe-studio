@@ -62,6 +62,7 @@ class CheckoutResult:
     customer_session_client_secret: Optional[str] = None
     billing: Optional[Dict[str, str]] = None
     checkout_kind: str = "custom"
+    confirm_return_url: str = ""
 
 
 @runtime_checkable
@@ -97,6 +98,7 @@ class PaymentRequest:
     checkout_session_id: Optional[str] = None
     publishable_key: Optional[str] = None
     billing: Optional[Dict[str, str]] = None
+    plan: Optional[str] = None
 
 
 @dataclass(frozen=True)

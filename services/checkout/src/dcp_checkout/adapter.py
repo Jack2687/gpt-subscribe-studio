@@ -21,9 +21,10 @@ from dcp_core.proxies import align_proxy_region, configured_proxy, rotate_proxy_
 
 _LIST_PRICE = {
     Plan.PLUS: Decimal("20.00"),
-    Plan.PRO_LITE: Decimal("20.00"),
+    Plan.GO: Decimal("8.00"),
+    Plan.PRO_LITE: Decimal("100.00"),
     Plan.PRO: Decimal("200.00"),
-    Plan.PRO_MAX: Decimal("200.00"),
+    Plan.PRO_MAX: Decimal("500.00"),
     Plan.TEAM: Decimal("125.00"),
 }
 
@@ -83,6 +84,7 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
             customer_session_client_secret=created.customer_session_client_secret or None,
             billing=dict(address_for(req.billing_country)),
             checkout_kind=created.checkout_kind or ("hosted" if req.plan is Plan.TEAM else "custom"),
+            confirm_return_url=created.confirm_return_url or "",
         )
 
     def _create(self, req: CheckoutRequest, proxy: Optional[str]):

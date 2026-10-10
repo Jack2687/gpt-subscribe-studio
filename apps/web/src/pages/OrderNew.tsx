@@ -15,13 +15,29 @@ interface Props {
   onCreated: (orderId: string) => void;
 }
 
-const PLANS: { id: Plan; label: string; hint: string }[] = [
-  { id: "plus", label: "Plus", hint: "页内填卡" },
-  { id: "pro_lite", label: "Go / Lite", hint: "页内填卡" },
-  { id: "pro", label: "Pro", hint: "页内填卡" },
-  { id: "pro_max", label: "Pro Max", hint: "页内填卡" },
+const FAMILIES: { id: "plus" | "go" | "pro" | "team"; label: string; hint: string }[] = [
+  { id: "plus", label: "Plus", hint: "官方 Plus" },
+  { id: "go", label: "Go", hint: "官方 Go" },
+  { id: "pro", label: "Pro", hint: "三档用量" },
   { id: "team", label: "Team", hint: "托管长链" },
 ];
+const PRO_TIERS: { id: Plan; label: string; hint: string }[] = [
+  { id: "pro_lite", label: "Standard", hint: "$100" },
+  { id: "pro", label: "More", hint: "$200" },
+  { id: "pro_max", label: "Max", hint: "$500" },
+];
+
+function isProFamily(value: Plan): boolean {
+  return value === "pro_lite" || value === "pro" || value === "pro_max";
+}
+
+function familyOf(value: Plan): "plus" | "go" | "pro" | "team" {
+  if (value === "go") return "go";
+  if (value === "team") return "team";
+  if (isProFamily(value)) return "pro";
+  return "plus";
+}
+
 const SEAT_PRESETS = [2, 3, 5, 8, 10];
 const REGIONS: { code: string; label: string }[] = [
   { code: "US", label: "美国" },
@@ -153,20 +169,46 @@ export function OrderNew({ onCreated }: Props) {
       <fieldset disabled={busy || Boolean(order)}>
         <legend>套餐</legend>
         <div className="plan-grid" role="radiogroup" aria-label="套餐">
-          {PLANS.map((item) => (
+          {FAMILIES.map((item) => (
             <button
               key={item.id}
               type="button"
               role="radio"
-              aria-checked={plan === item.id}
+              aria-checked={familyOf(plan) === item.id}
               className="plan-btn"
-              onClick={() => setPlan(item.id)}
+              onClick={() => {
+                if (item.id === "pro") {
+                  setPlan(isProFamily(plan) ? plan : "pro_lite");
+                  return;
+                }
+                setPlan(item.id);
+              }}
             >
               {item.label}
               <small>{item.hint}</small>
             </button>
           ))}
         </div>
+        {familyOf(plan) === "pro" && (
+          <div className="plan-grid plan-tiers" role="radiogroup" aria-label="Pro 档位">
+            {PRO_TIERS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="radio"
+                aria-checked={plan === item.id}
+                className="plan-btn"
+                onClick={() => setPlan(item.id)}
+              >
+                {item.label}
+                <small>{item.hint}</small>
+              </button>
+            ))}
+          </div>
+        )}
+        {familyOf(plan) === "pro" && (
+          <p className="hint">Pro 三档是官方 Standard / More / Max。标的是美国价，其它地区以结账金额为准。</p>
+        )}
         <label>
           地区
           <select required value={country} onChange={(e) => setCountry(e.target.value)}>
@@ -281,6 +323,7 @@ export function OrderNew({ onCreated }: Props) {
             currency={order.currency}
             customerSessionClientSecret={order.customer_session_client_secret}
             checkoutUrl={order.checkout_url}
+            confirmReturnUrl={order.confirm_return_url}
             onReady={setCard}
           />
         </fieldset>

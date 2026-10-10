@@ -23,6 +23,7 @@ type Props = {
   currency?: string | null;
   customerSessionClientSecret?: string | null;
   checkoutUrl?: string | null;
+  confirmReturnUrl?: string | null;
   onReady: (handle: StripeCardHandle | null) => void;
 };
 
@@ -51,6 +52,7 @@ export function StripeCardFields({
   currency,
   customerSessionClientSecret,
   checkoutUrl,
+  confirmReturnUrl,
   onReady,
 }: Props) {
   const onReadyRef = useRef(onReady);
@@ -71,7 +73,7 @@ export function StripeCardFields({
         if (cancelled) return;
         const currencyCode = (currency || "usd").toLowerCase();
         const options: Record<string, unknown> = {
-          mode: "payment",
+          mode: "subscription",
           currency: currencyCode,
           amount: Math.max(1, toMinor(amount, currencyCode)),
           setupFutureUsage: "off_session",
@@ -113,7 +115,7 @@ export function StripeCardFields({
                     },
                   },
                 },
-                return_url: verifyUrl(checkoutUrl),
+                return_url: verifyUrl(confirmReturnUrl, checkoutUrl),
               },
             });
             if (result.error || !result.confirmationToken?.id) {
@@ -137,7 +139,7 @@ export function StripeCardFields({
       onReadyRef.current(null);
       paymentEl?.unmount();
     };
-  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl]);
+  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl]);
 
   return (
     <>
@@ -202,13 +204,18 @@ function toMinor(amount: string | null | undefined, currency: string): number {
   return Math.round(value * 100);
 }
 
-function verifyUrl(checkoutUrl?: string | null): string {
-  const parts = String(checkoutUrl || "")
-    .split("/")
-    .filter(Boolean);
-  const id = parts[parts.length - 1] || "";
-  if (id.startsWith("oaics_")) {
-    return `https://chatgpt.com/checkout/verify?stripe_session_id=${id}`;
+function verifyUrl(confirmReturnUrl?: string | null, checkoutUrl?: string | null): string {
+  if (String(confirmReturnUrl || "").startsWith("https://chatgpt.com/checkout/verify")) {
+    return String(confirmReturnUrl);
+  }
+  const parts = String(checkoutUrl || "").split("/").filter(Boolean);
+  const id = (parts[parts.length - 1] || "").split("?")[0];
+  const processor = parts.includes("checkout") ? parts[parts.indexOf("checkout") + 1] || "" : "";
+  if (id.startsWith("oaics_") || id.startsWith("cs_")) {
+    const query = [`stripe_session_id=${id}`];
+    if (processor && processor !== "verify") query.push(`processor_entity=${processor}`);
+    query.push("source=chatgpt_web_merged");
+    return `https://chatgpt.com/checkout/verify?${query.join("&")}`;
   }
   return "https://chatgpt.com/";
 }
@@ -260,17 +267,23 @@ function avoidDualStripeVersion(): void {
 function loadStripe(): Promise<void> {
   avoidDualStripeVersion();
   if (window.Stripe) return Promise.resolve();
+  return loadScript("https://js.stripe.com/basil/stripe.js").catch(() =>
+    loadScript("https://js.stripe.com/v3/"),
+  );
+}
+
+function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const existing = document.querySelector("script[data-dcp-stripe]");
+    const existing = document.querySelector(`script[data-dcp-stripe="${src}"]`);
     if (existing) {
       existing.addEventListener("load", () => resolve());
       existing.addEventListener("error", () => reject(new Error("Stripe.js 加载失败")));
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://js.stripe.com/v3/";
+    script.src = src;
     script.async = true;
-    script.dataset.dcpStripe = "1";
+    script.dataset.dcpStripe = src;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Stripe.js 加载失败"));
     document.head.appendChild(script);

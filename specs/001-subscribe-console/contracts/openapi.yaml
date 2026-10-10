@@ -142,7 +142,7 @@ components:
       properties:
         plan:
           type: string
-          enum: [plus, pro_lite, pro, pro_max]
+          enum: [plus, go, pro_lite, pro, pro_max, team]
         billing_country:
           type: string
           description: ISO 国家码，须与代理出口一致
