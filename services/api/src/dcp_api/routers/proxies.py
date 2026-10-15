@@ -8,7 +8,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from dcp_core.proxies import ROLES, GatewayStore
+from dcp_core.proxies import ROLES, GatewayStore, describe_gateway, gateway_from_input
 
 router = APIRouter(prefix="/api/settings/proxies", tags=["settings"])
 
@@ -23,6 +23,46 @@ async def get_proxies(request: Request):
         return {role: store(request).get(role).public() for role in ROLES}
     except (OSError, ValueError, TypeError):
         raise HTTPException(500, "代理配置读取失败")
+
+
+@router.post("/parse")
+async def parse_proxy(request: Request):
+    """预览：把粘贴的代理串拆开，不保存。"""
+    try:
+        values = await request.json()
+        return describe_gateway(gateway_from_input(str(values.get("raw", ""))))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc) if type(exc) is ValueError else "代理格式不正确")
+    except (TypeError, AttributeError):
+        raise HTTPException(400, "代理格式不正确")
+
+
+@router.put("")
+async def save_proxy_all(request: Request):
+    """保存同一个代理到提链与支付两个阶段，保证同一订单出口一致。"""
+    try:
+        values = await request.json()
+        enabled = values.get("enabled", True)
+        if type(enabled) is not bool:
+            raise ValueError("启用状态格式不正确")
+        gateway = gateway_from_input(str(values.get("raw", "")), enabled=enabled)
+        fields = {
+            "host": gateway.host,
+            "port": gateway.port,
+            "scheme": gateway.scheme,
+            "username": gateway.username,
+            "password": gateway.password,
+            "region": gateway.region,
+            "sid": gateway.sid,
+            "enabled": gateway.enabled,
+        }
+        for role in ROLES:
+            store(request).save(role, {**fields, "clear_auth": False})
+        return describe_gateway(gateway)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc) if type(exc) is ValueError else "代理格式不正确")
+    except (TypeError, AttributeError, OSError):
+        raise HTTPException(400, "代理配置保存失败，请检查参数与文件权限")
 
 
 @router.put("/{role}")

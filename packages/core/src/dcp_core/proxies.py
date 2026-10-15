@@ -15,8 +15,14 @@ from threading import RLock
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 ROLES = ("checkout", "approve")
-_REGION = re.compile(r"(-region-)([A-Za-z]{2})(?=-|$)")
-_SID = re.compile(r"(-sid-)([A-Za-z0-9]+)(?=-|$)")
+# 供应商写法不一：-region-US / _country_us、-sid-abc / -session-abc。替换时保留原来的键名与大小写。
+_REGION = re.compile(r"([-_](?:region|country|area|cc)[-_])([A-Za-z]{2})(?=[-_]|$)", re.I)
+_SID = re.compile(r"([-_](?:sid|session|sessid|sessionid)[-_])([A-Za-z0-9]+)(?=[-_]|$)", re.I)
+
+
+def _like(old: str, new: str) -> str:
+    """新值沿用旧值的大小写风格（供应商常要求小写国家码）。"""
+    return new.lower() if old.islower() else new
 
 
 def route_username(username: str, region: str, sid: str) -> str:
@@ -24,7 +30,7 @@ def route_username(username: str, region: str, sid: str) -> str:
     if region:
         if not _REGION.search(username):
             raise ValueError("账号中没有 -region- 参数，请检查供应商格式")
-        username = _REGION.sub(lambda m: m[1] + region, username)
+        username = _REGION.sub(lambda m: m[1] + _like(m[2], region), username)
     if sid:
         if not _SID.search(username):
             raise ValueError("账号中没有 -sid- 参数，请检查供应商格式")
@@ -205,7 +211,7 @@ def rewrite_proxy_exit(proxy: str, *, region: str = "", sid: str = "") -> str:
     sid = str(sid or "").strip()
     if region:
         if _REGION.search(username):
-            username = _REGION.sub(lambda match: match[1] + region, username)
+            username = _REGION.sub(lambda match: match[1] + _like(match[2], region), username)
         else:
             username = f"{username}-region-{region}"
     if sid:
@@ -271,3 +277,57 @@ __all__ = [
     "proxy_exit_region",
     "align_proxy_region",
 ]
+
+
+def parse_proxy_input(raw: str) -> dict:
+    """把用户粘贴的代理串拆成 Gateway 字段。
+
+    支持：``scheme://user:pass@host:port``、``user:pass@host:port``、
+    ``host:port:user:pass``、``host:port``。账号里的地区 / SID 由 Gateway.validate 读出。
+    """
+    text = str(raw or "").strip()
+    if not text or len(text) > 2048 or any(ch in text for ch in "\r\n\t "):
+        raise ValueError("请粘贴一行代理，例如 http://账号:密码@主机:端口")
+    scheme = "http"
+    if "://" in text:
+        parsed = urlsplit(text)
+        scheme = (parsed.scheme or "http").lower()
+        host, port = parsed.hostname or "", parsed.port
+        username, password = unquote(parsed.username or ""), unquote(parsed.password or "")
+    elif "@" in text:
+        creds, _, endpoint = text.rpartition("@")
+        username, _, password = creds.partition(":")
+        host, _, port_text = endpoint.rpartition(":")
+        port = int(port_text) if port_text.isdigit() else None
+    else:
+        parts = text.split(":")
+        if len(parts) >= 4 and parts[1].isdigit():
+            host, port, username, password = parts[0], int(parts[1]), parts[2], ":".join(parts[3:])
+        elif len(parts) == 2 and parts[1].isdigit():
+            host, port, username, password = parts[0], int(parts[1]), "", ""
+        else:
+            raise ValueError("无法识别代理格式，请使用 http://账号:密码@主机:端口")
+    if not host or port is None:
+        raise ValueError("代理缺少主机或端口")
+    return {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+    }
+
+
+def gateway_from_input(raw: str, *, enabled: bool = True) -> Gateway:
+    return Gateway(**parse_proxy_input(raw), enabled=enabled).validate()
+
+
+def describe_gateway(gateway: Gateway) -> dict:
+    """给界面预览用：不含账号密码，标出是否检测到地区 / SID 参数。"""
+    data = gateway.public()
+    data["has_region_param"] = bool(_REGION.search(gateway.username))
+    data["has_sid_param"] = bool(_SID.search(gateway.username))
+    return data
+
+
+__all__ += ["parse_proxy_input", "gateway_from_input", "describe_gateway"]

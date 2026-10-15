@@ -128,3 +128,48 @@ export async function getOrder(orderId: string): Promise<Order> {
 export function isHostedOrder(order: Pick<Order, "plan" | "checkout_kind">): boolean {
   return order.checkout_kind === "hosted" || order.plan === "team";
 }
+
+export interface ProxyInfo {
+  host: string;
+  port: number;
+  scheme: string;
+  region: string;
+  sid: string;
+  enabled: boolean;
+  has_username: boolean;
+  has_password: boolean;
+  has_region_param?: boolean;
+  has_sid_param?: boolean;
+}
+
+export async function getProxies(): Promise<{ checkout: ProxyInfo; approve: ProxyInfo }> {
+  const res = await fetch("/api/settings/proxies");
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}
+
+export async function parseProxy(raw: string): Promise<ProxyInfo> {
+  const res = await fetch("/api/settings/proxies/parse", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ raw }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}
+
+export async function saveProxy(raw: string, enabled: boolean): Promise<ProxyInfo> {
+  const res = await fetch("/api/settings/proxies", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ raw, enabled }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}
+
+export async function testProxy(): Promise<{ ip: string; elapsed_ms: number; region: string; sid: string }> {
+  const res = await fetch("/api/settings/proxies/checkout/test", { method: "POST" });
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}

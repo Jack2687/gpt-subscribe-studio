@@ -1,10 +1,11 @@
 import { ActionIcon, Badge, Container, Group, Tabs, Text, Title, Tooltip, useMantineColorScheme } from "@mantine/core";
-import { IconHistory, IconLogout, IconMoon, IconReceipt, IconSun } from "@tabler/icons-react";
+import { IconHistory, IconLogout, IconMoon, IconNetwork, IconReceipt, IconSun } from "@tabler/icons-react";
 import { useCallback, useState } from "react";
 
 import { loadHistory, recordOrder } from "./api/history";
 import type { Order } from "./api/client";
 import { HistoryTable } from "./components/HistoryTable";
+import { ProxySettings } from "./components/ProxySettings";
 import { OrderNew } from "./pages/OrderNew";
 
 export function App() {
@@ -52,12 +53,18 @@ export function App() {
           >
             开通记录
           </Tabs.Tab>
+          <Tabs.Tab value="proxy" leftSection={<IconNetwork size={16} />}>
+            代理设置
+          </Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="order">
           <OrderNew onRecord={record} />
         </Tabs.Panel>
         <Tabs.Panel value="history">
           <HistoryTable items={history} />
+        </Tabs.Panel>
+        <Tabs.Panel value="proxy">
+          <ProxySettings />
         </Tabs.Panel>
       </Tabs>
 
