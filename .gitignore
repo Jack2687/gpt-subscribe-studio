@@ -32,6 +32,10 @@ payment.json
 standalone_config.json
 card_pool.local.json
 private/
+config/
+proxy-config/
+proxy-gateways.json
+proxy-vendor*.txt
 *.har
 *.pem
 *.key
