@@ -2,6 +2,7 @@
  * Stripe Payment Element：卡号只在 iframe 里，浏览器直接产出 ctoken_，不进本站。
  */
 
+import { Alert, Text } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 
 export type BillingDetails = {
@@ -79,7 +80,14 @@ export function StripeCardFields({
           setupFutureUsage: "off_session",
           paymentMethodTypes: ["card", "link"],
           allowedPaymentMethodTypes: ["card", "link"],
-          appearance: { theme: "stripe" },
+          appearance: {
+            theme: "stripe",
+            variables: {
+              borderRadius: "8px",
+              colorPrimary: "#4c6ef5",
+              fontFamily: 'ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif',
+            },
+          },
         };
         if (customerSessionClientSecret) {
           options.customerSessionClientSecret = customerSessionClientSecret;
@@ -143,12 +151,16 @@ export function StripeCardFields({
 
   return (
     <>
-      <div id="dcp-payment" className="stripe-payment" />
-      {hint && !error && <p className="hint">{hint}</p>}
+      <div id="dcp-payment" />
+      {hint && !error && (
+        <Text size="xs" c="dimmed" mt="xs">
+          {hint}
+        </Text>
+      )}
       {error && (
-        <p className="alert" role="alert">
+        <Alert color="red" variant="light" mt="xs" role="alert">
           {error}
-        </p>
+        </Alert>
       )}
     </>
   );

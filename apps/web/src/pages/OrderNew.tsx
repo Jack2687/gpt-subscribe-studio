@@ -1,8 +1,9 @@
+import { Alert, Button, Code, CopyButton, Group, Paper, Stack, Stepper, Text } from "@mantine/core";
+import { IconAlertCircle, IconCheck, IconCopy, IconExternalLink } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 
 import {
   createOrder,
-  formatAmount,
   getOrder,
   isHostedOrder,
   payOrder,
@@ -11,83 +12,40 @@ import {
   type Order,
   type Plan,
 } from "../api/client";
-import { isSettled, loadHistory, recordOrder, SUCCESS_STATUSES } from "../api/history";
+import { SUCCESS_STATUSES, isSettled } from "../api/history";
+import { BillingForm } from "../components/BillingForm";
+import { OrderSummary } from "../components/OrderSummary";
+import { PlanPicker, type TeamValues } from "../components/PlanPicker";
+import { ResultPanel } from "../components/ResultPanel";
+import { SessionField } from "../components/SessionField";
 import { StripeCardFields, type StripeCardHandle } from "../card-payment/CardFields";
-import { HistoryList, ResultPanel } from "./ResultPanel";
 
-const FAMILIES: { id: "plus" | "go" | "pro" | "team"; label: string; hint: string }[] = [
-  { id: "plus", label: "Plus", hint: "官方 Plus" },
-  { id: "go", label: "Go", hint: "官方 Go" },
-  { id: "pro", label: "Pro", hint: "三档用量" },
-  { id: "team", label: "Team", hint: "托管长链" },
-];
-const PRO_TIERS: { id: Plan; label: string; hint: string }[] = [
-  { id: "pro_lite", label: "Standard", hint: "$100" },
-  { id: "pro", label: "More", hint: "$200" },
-  { id: "pro_max", label: "Max", hint: "$500" },
-];
-
-function isProFamily(value: Plan): boolean {
-  return value === "pro_lite" || value === "pro" || value === "pro_max";
+interface Props {
+  onRecord: (order: Order) => void;
 }
 
-function familyOf(value: Plan): "plus" | "go" | "pro" | "team" {
-  if (value === "go") return "go";
-  if (value === "team") return "team";
-  if (isProFamily(value)) return "pro";
-  return "plus";
-}
-
-const SEAT_PRESETS = [2, 3, 5, 8, 10];
-const REGIONS: { code: string; label: string }[] = [
-  { code: "US", label: "美国" },
-  { code: "PH", label: "菲律宾" },
-  { code: "CL", label: "智利" },
-  { code: "EG", label: "埃及" },
-  { code: "JP", label: "日本" },
-  { code: "GB", label: "英国" },
-  { code: "TR", label: "土耳其" },
-  { code: "BR", label: "巴西" },
-  { code: "MX", label: "墨西哥" },
-  { code: "IN", label: "印度" },
-  { code: "ID", label: "印尼" },
-  { code: "VN", label: "越南" },
-  { code: "TH", label: "泰国" },
-  { code: "MY", label: "马来西亚" },
-  { code: "SG", label: "新加坡" },
-  { code: "KR", label: "韩国" },
-  { code: "AU", label: "澳大利亚" },
-  { code: "CA", label: "加拿大" },
-  { code: "DE", label: "德国" },
-  { code: "NL", label: "荷兰" },
-  { code: "PL", label: "波兰" },
-  { code: "AR", label: "阿根廷" },
-  { code: "SA", label: "沙特" },
-  { code: "AE", label: "阿联酋" },
-  { code: "ZA", label: "南非" },
-];
-
-export function OrderNew() {
+export function OrderNew({ onRecord }: Props) {
   const [plan, setPlan] = useState<Plan>("plus");
   const [country, setCountry] = useState("");
   const [session, setSession] = useState("");
-  const [seats, setSeats] = useState(5);
-  const [workspace, setWorkspace] = useState("Team Workspace");
-  const [promoCode, setPromoCode] = useState("");
-  const [interval, setInterval] = useState<"month" | "year">("month");
+  const [team, setTeam] = useState<TeamValues>({
+    seats: 5,
+    workspace: "Team Workspace",
+    promoCode: "",
+    interval: "month",
+  });
   const [order, setOrder] = useState<Order | null>(null);
   const [result, setResult] = useState<Order | null>(null);
-  const [history, setHistory] = useState(loadHistory);
   const [addr, setAddr] = useState<BillingInput | null>(null);
   const [card, setCard] = useState<StripeCardHandle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const due = order ? formatAmount(order.amount, order.currency) : null;
   const hosted = order ? isHostedOrder(order) : plan === "team";
+  const step = result ? 2 : order ? 1 : 0;
 
   function finish(next: Order) {
     setResult(next);
-    setHistory(recordOrder(next));
+    onRecord(next);
   }
 
   function reset() {
@@ -107,13 +65,13 @@ export function OrderNew() {
       try {
         const next = await getOrder(id);
         setResult(next);
-        if (isSettled(next.status)) setHistory(recordOrder(next));
+        if (isSettled(next.status)) onRecord(next);
       } catch {
         /* keep polling */
       }
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [result]);
+  }, [result, onRecord]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -126,10 +84,10 @@ export function OrderNew() {
           return;
         }
         if (!country) {
-          setError("请先选择和 session 导出国家相同的地区。日本刀导出的选日本，不要选美国。");
+          setError("请先选择和 session 导出国家相同的地区。");
           return;
         }
-        if (plan === "team" && (!Number.isInteger(seats) || seats < 2)) {
+        if (plan === "team" && (!Number.isInteger(team.seats) || team.seats < 2)) {
           setError("Team 需要填写席位，最少 2 人。");
           return;
         }
@@ -137,10 +95,10 @@ export function OrderNew() {
           plan,
           billing_country: country,
           session,
-          promo_code: plan === "team" ? promoCode.trim() : "",
-          workspace_name: plan === "team" ? workspace.trim() : "",
-          seat_quantity: plan === "team" ? seats : undefined,
-          price_interval: plan === "team" ? interval : undefined,
+          promo_code: plan === "team" ? team.promoCode.trim() : "",
+          workspace_name: plan === "team" ? team.workspace.trim() : "",
+          seat_quantity: plan === "team" ? team.seats : undefined,
+          price_interval: plan === "team" ? team.interval : undefined,
         });
         if (!isHostedOrder(created) && !created.publishable_key) {
           throw new Error("结账已创建，但没有拿到 Stripe 公钥，无法加载安全输入框。");
@@ -190,257 +148,126 @@ export function OrderNew() {
     }
   }
 
-  async function copyLink() {
-    if (!order?.checkout_url) return;
-    await navigator.clipboard.writeText(order.checkout_url);
-    setError(null);
-  }
-
   return (
     <form onSubmit={submit}>
-      <fieldset disabled={busy || Boolean(order)}>
-        <legend>ChatGPT session</legend>
-        <textarea
-          rows={4}
-          placeholder={
-            plan === "team"
-              ? "Team 长链一般只需要 accessToken。有整段 JSON 也可以贴。只在内存使用，不写数据库。"
-              : "请粘贴整段 session JSON（accessToken、sessionToken、cookies / oai-did）。Plus / Pro 页内填卡只贴 accessToken 经常不够。只在内存使用，不写数据库。"
-          }
-          value={session}
-          onChange={(e) => setSession(e.target.value)}
-        />
-      </fieldset>
+      <div className="order-layout">
+        <Paper withBorder p="lg" radius="md">
+          <Stepper active={step} size="sm" mb="lg" allowNextStepsSelect={false}>
+            <Stepper.Step label="配置订单" description="session、套餐、地区" />
+            <Stepper.Step label={hosted ? "长链支付" : "填卡支付"} description={hosted ? "打开链接付款" : "地址与卡片"} />
+            <Stepper.Step label="结果" description="成功或失败" />
+          </Stepper>
 
-      <fieldset disabled={busy || Boolean(order)}>
-        <legend>套餐</legend>
-        <div className="plan-grid" role="radiogroup" aria-label="套餐">
-          {FAMILIES.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="radio"
-              aria-checked={familyOf(plan) === item.id}
-              className="plan-btn"
-              onClick={() => {
-                if (item.id === "pro") {
-                  setPlan(isProFamily(plan) ? plan : "pro_lite");
-                  return;
-                }
-                setPlan(item.id);
-              }}
-            >
-              {item.label}
-              <small>{item.hint}</small>
-            </button>
-          ))}
-        </div>
-        {familyOf(plan) === "pro" && (
-          <div className="plan-grid plan-tiers" role="radiogroup" aria-label="Pro 档位">
-            {PRO_TIERS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="radio"
-                aria-checked={plan === item.id}
-                className="plan-btn"
-                onClick={() => setPlan(item.id)}
-              >
-                {item.label}
-                <small>{item.hint}</small>
-              </button>
-            ))}
-          </div>
-        )}
-        {familyOf(plan) === "pro" && (
-          <p className="hint">Pro 三档是官方 Standard / More / Max。标的是美国价，其它地区以结账金额为准。</p>
-        )}
-        <label>
-          地区
-          <select required value={country} onChange={(e) => setCountry(e.target.value)}>
-            <option value="">请选择（必须和 session 导出国家一致）</option>
-            {REGIONS.map((item) => (
-              <option key={item.code} value={item.code}>
-                {item.label} ({item.code})
-              </option>
-            ))}
-          </select>
-        </label>
-        {plan === "team" && (
-          <div className="team-fields">
-            <label>
-              席位（最少 2 人）
-              <input
-                type="number"
-                min={2}
-                max={999}
-                required
-                value={seats}
-                onChange={(e) => setSeats(Number(e.target.value))}
+          {step === 0 && (
+            <Stack gap="lg">
+              <SessionField value={session} onChange={setSession} team={plan === "team"} disabled={busy} />
+              <PlanPicker
+                plan={plan}
+                onPlan={setPlan}
+                country={country}
+                onCountry={setCountry}
+                team={team}
+                onTeam={setTeam}
+                disabled={busy}
               />
-            </label>
-            <div className="seat-presets">
-              {SEAT_PRESETS.map((count) => (
-                <button
-                  key={count}
-                  type="button"
-                  className="seat-chip"
-                  aria-pressed={seats === count}
-                  onClick={() => setSeats(count)}
+              <Text size="xs" c="dimmed">
+                session 从哪国网络导出，这里就选哪国。session 只在内存中使用，不写数据库；卡号由 Stripe 输入框处理，不经过本站。
+              </Text>
+            </Stack>
+          )}
+
+          {step === 1 && order && hosted && (
+            <Stack gap="md">
+              <Alert color="green" variant="light" icon={<IconCheck size={18} />} title="结账已创建">
+                请打开长链付款，不要在本页填卡。付完回到这里点「我已支付，查询订阅」。
+              </Alert>
+              <Code block style={{ wordBreak: "break-all", whiteSpace: "pre-wrap" }}>
+                {order.checkout_url}
+              </Code>
+              <Group>
+                <Button
+                  component="a"
+                  href={order.checkout_url || "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  leftSection={<IconExternalLink size={16} />}
+                  variant="light"
                 >
-                  {count} 人
-                </button>
-              ))}
-            </div>
-            <div className="row">
-              <label>
-                计费周期
-                <select value={interval} onChange={(e) => setInterval(e.target.value as "month" | "year")}>
-                  <option value="month">按月</option>
-                  <option value="year">按年</option>
-                </select>
-              </label>
-              <label>
-                空间名称
-                <input value={workspace} maxLength={80} onChange={(e) => setWorkspace(e.target.value)} />
-              </label>
-            </div>
-            <label>
-              Team 优惠码（选填）
-              <input
-                value={promoCode}
-                maxLength={80}
-                placeholder="有活动码就填，没有留空"
-                onChange={(e) => setPromoCode(e.target.value)}
-              />
-            </label>
-            <p className="hint">席位会写入 ChatGPT Team 结账。金额按所选地区货币报价。</p>
-          </div>
-        )}
-        <p className="hint">
-          session 从哪国网络导出，这里就选哪国。Team 走 Stripe 托管长链；其它套餐仍在本页填卡。
-        </p>
-      </fieldset>
-
-      {order && hosted ? (
-        <fieldset>
-          <legend>Team 托管长链</legend>
-          <p className="ok">
-            结账已创建（{order.billing_country}
-            {order.currency ? ` · ${order.currency}` : ""}
-            {order.seat_quantity ? ` · ${order.seat_quantity} 席` : ""}）。请打开长链付款，不要在本页填卡。
-          </p>
-          {due ? (
-            <p className="amount">
-              应付金额 <strong>{due}</strong>
-            </p>
-          ) : (
-            <p className="hint">未从结账拿到金额，请以打开后的 Stripe 页面为准。</p>
+                  打开长链
+                </Button>
+                <CopyButton value={order.checkout_url ?? ""}>
+                  {({ copied, copy }) => (
+                    <Button
+                      variant="default"
+                      onClick={copy}
+                      leftSection={copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
+                    >
+                      {copied ? "已复制" : "复制链接"}
+                    </Button>
+                  )}
+                </CopyButton>
+              </Group>
+            </Stack>
           )}
-          <p className="hosted-url">
-            <code>{order.checkout_url}</code>
-          </p>
-          <div className="actions">
-            <a className="btn btn-primary link-btn" href={order.checkout_url || "#"} target="_blank" rel="noreferrer">
-              打开长链
-            </a>
-            <button type="button" className="btn btn-ghost" onClick={() => void copyLink()}>
-              复制链接
-            </button>
-          </div>
-        </fieldset>
-      ) : order && !result ? (
-        <fieldset disabled={busy}>
-          <legend>卡片（Stripe 安全输入框）</legend>
-          <p className="ok">
-            结账已创建（{order.billing_country}
-            {order.currency ? ` · ${order.currency}` : ""}）。下面的账单地址是自动生成的示例，用自己的真实卡请改成卡的账单地址（要和发卡行登记的一致）。
-          </p>
-          {addr && (
-            <div className="billing-fields">
-              <label>
-                持卡人姓名
-                <input value={addr.name} onChange={(e) => setAddr({ ...addr, name: e.target.value })} />
-              </label>
-              <label>
-                街道地址
-                <input value={addr.line1} onChange={(e) => setAddr({ ...addr, line1: e.target.value })} />
-              </label>
-              <div className="row">
-                <label>
-                  城市
-                  <input value={addr.city} onChange={(e) => setAddr({ ...addr, city: e.target.value })} />
-                </label>
-                <label>
-                  州 / 省
-                  <input value={addr.state} onChange={(e) => setAddr({ ...addr, state: e.target.value })} />
-                </label>
-                <label>
-                  邮编
-                  <input
-                    value={addr.postal_code}
-                    onChange={(e) => setAddr({ ...addr, postal_code: e.target.value })}
-                  />
-                </label>
+
+          {step === 1 && order && !hosted && addr && (
+            <Stack gap="lg">
+              <Text fw={600}>账单地址</Text>
+              <BillingForm value={addr} onChange={setAddr} disabled={busy} />
+              <div>
+                <Text fw={600} mb="xs">
+                  卡片
+                </Text>
+                <StripeCardFields
+                  publishableKey={order.publishable_key || ""}
+                  amount={order.amount}
+                  currency={order.currency}
+                  customerSessionClientSecret={order.customer_session_client_secret}
+                  checkoutUrl={order.checkout_url}
+                  confirmReturnUrl={order.confirm_return_url}
+                  onReady={setCard}
+                />
               </div>
-              <p className="hint">国家固定为 {addr.country}，需和所选地区一致。</p>
-            </div>
+            </Stack>
           )}
-          {due ? (
-            <p className="amount">
-              应付金额 <strong>{due}</strong>
-            </p>
-          ) : (
-            <p className="hint">未从结账拿到金额，支付前请以 Stripe 确认为准。</p>
-          )}
-          <StripeCardFields
-            publishableKey={order.publishable_key || ""}
-            amount={order.amount}
-            currency={order.currency}
-            customerSessionClientSecret={order.customer_session_client_secret}
-            checkoutUrl={order.checkout_url}
-            confirmReturnUrl={order.confirm_return_url}
-            onReady={setCard}
-          />
-        </fieldset>
-      ) : (
-        <p className="hint">
-          {plan === "team"
-            ? "Team 长链由 ChatGPT 直接生成 Stripe 托管页，支付不经过本站。一般只贴 accessToken 即可。"
-            : "先创建结账。成功后会加载 Stripe 官方填卡控件，卡号不会经过本站。页内填卡需要整段 session。"}
-        </p>
-      )}
 
-      {result && <ResultPanel order={result} onReset={reset} />}
-      {error && !result && (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      )}
-      {!(result && !hosted) && (
-      <div className="actions">
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={busy || Boolean(order && !hosted && !card)}
-        >
-          {busy
-            ? order
-              ? hosted
-                ? "正在查询订阅…"
-                : "正在支付…"
-              : "正在创建结账…"
-            : order
-              ? hosted
-                ? "我已支付，查询订阅"
-                : `确认支付${due ? ` ${due}` : ""}`
-              : plan === "team"
-                ? `创建 Team 长链（${seats} 席）`
-                : "创建结账"}
-        </button>
+          {step === 2 && result && <ResultPanel order={result} onReset={reset} />}
+
+          {error && step < 2 && (
+            <Alert mt="md" color="red" variant="light" icon={<IconAlertCircle size={18} />} role="alert">
+              {error}
+            </Alert>
+          )}
+
+          {step < 2 && (
+            <Group mt="lg" justify="flex-end">
+              <Button
+                type="submit"
+                size="md"
+                loading={busy}
+                disabled={Boolean(order && !hosted && !card)}
+              >
+                {!order
+                  ? plan === "team"
+                    ? `创建 Team 长链（${team.seats} 席）`
+                    : "创建结账"
+                  : hosted
+                    ? "我已支付，查询订阅"
+                    : "确认支付"}
+              </Button>
+            </Group>
+          )}
+        </Paper>
+
+        <div className="order-side">
+          <OrderSummary plan={plan} country={country} order={order} seats={team.seats} />
+          {order && step < 2 && (
+            <Text size="xs" c="dimmed" mt="xs">
+              想改套餐或地区？刷新页面重新开始。
+            </Text>
+          )}
+        </div>
       </div>
-      )}
-      <HistoryList items={history} />
     </form>
   );
 }

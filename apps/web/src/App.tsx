@@ -1,30 +1,69 @@
+import { ActionIcon, Badge, Container, Group, Tabs, Text, Title, Tooltip, useMantineColorScheme } from "@mantine/core";
+import { IconHistory, IconLogout, IconMoon, IconReceipt, IconSun } from "@tabler/icons-react";
+import { useCallback, useState } from "react";
+
+import { loadHistory, recordOrder } from "./api/history";
+import type { Order } from "./api/client";
+import { HistoryTable } from "./components/HistoryTable";
 import { OrderNew } from "./pages/OrderNew";
 
 export function App() {
+  const [history, setHistory] = useState(loadHistory);
+  const { colorScheme, toggleColorScheme } = useMantineColorScheme();
+  const record = useCallback((order: Order) => setHistory(recordOrder(order)), []);
+
   async function logout() {
     await fetch("/logout", { method: "POST" });
     window.location.href = "/login";
   }
 
   return (
-    <main className="page">
-      <header className="hero">
-        <div className="topbar">
-          <h1>直卡协议</h1>
-          <button type="button" className="btn btn-ghost" onClick={() => void logout()}>
-            退出
-          </button>
+    <Container size={1040} py="xl">
+      <Group justify="space-between" align="center" mb="lg">
+        <div>
+          <Title order={2}>直卡协议</Title>
+          <Text size="sm" c="dimmed">
+            Plus / Go / Pro 在本页填卡，Team 走托管长链。卡号不经过本站服务器。
+          </Text>
         </div>
-        <p>
-          Plus / Pro 在本页填卡，建议粘贴整段 session JSON。Team 走托管长链，通常只贴 accessToken 就能出链；可填席位、优惠码和地区货币。卡号不经过本站服务器。
-        </p>
-      </header>
-      <div className="card">
-        <OrderNew />
-      </div>
-      <footer>
-        <p>pay.example.com · 独立小工具，不依赖其它项目</p>
-      </footer>
-    </main>
+        <Group gap="xs">
+          <Tooltip label={colorScheme === "dark" ? "浅色模式" : "深色模式"}>
+            <ActionIcon variant="default" size="lg" onClick={toggleColorScheme} aria-label="切换主题">
+              {colorScheme === "dark" ? <IconSun size={18} /> : <IconMoon size={18} />}
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="退出登录">
+            <ActionIcon variant="default" size="lg" onClick={() => void logout()} aria-label="退出">
+              <IconLogout size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+      </Group>
+
+      <Tabs defaultValue="order" keepMounted>
+        <Tabs.List mb="lg">
+          <Tabs.Tab value="order" leftSection={<IconReceipt size={16} />}>
+            开通
+          </Tabs.Tab>
+          <Tabs.Tab
+            value="history"
+            leftSection={<IconHistory size={16} />}
+            rightSection={history.length ? <Badge size="xs" variant="light">{history.length}</Badge> : null}
+          >
+            开通记录
+          </Tabs.Tab>
+        </Tabs.List>
+        <Tabs.Panel value="order">
+          <OrderNew onRecord={record} />
+        </Tabs.Panel>
+        <Tabs.Panel value="history">
+          <HistoryTable items={history} />
+        </Tabs.Panel>
+      </Tabs>
+
+      <Text size="xs" c="dimmed" ta="center" mt="xl">
+        pay.example.com · 独立开通工具
+      </Text>
+    </Container>
   );
 }
