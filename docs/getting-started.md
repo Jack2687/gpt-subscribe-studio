@@ -277,3 +277,14 @@ A: 50 个测试通过意味着：
 - 账号里没有地区或 SID 参数时，程序会在末尾追加 `-region-XX`、`-sid-随机值`，请确认你的供应商支持这个写法。
 - 代理保存在服务端的配置目录（`DCP_CONFIG_DIR`，容器内为 `/config`），页面和接口都不会回显账号密码。
 - 「测试连接」只返回出口 IP 和耗时，是否属于目标地区请自行确认。
+
+## 服务器部署（`deploy/server`）
+
+`deploy/server/compose.yml` 不含任何域名或路径，部署时用环境变量指定：
+
+| 变量 | 说明 |
+|---|---|
+| `DCP_RELEASE` | 镜像标签（必填），例如构建时间戳 |
+| `DCP_PRIVATE_DIR` | 存放 `container-auth.json`（访问密码）和 `proxy-config/` 的目录（必填，不要放进仓库） |
+| `DCP_COMPOSE_PROJECT` | compose 项目名，默认 `directcard-protocol` |
+| `DCP_PUBLIC_ORIGIN` | 选填，例如 `https://你的域名`。不填时按「请求 Origin 与 Host 同源」校验，部署到任何域名都能用 |

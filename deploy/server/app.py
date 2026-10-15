@@ -12,6 +12,6 @@ app.add_middleware(
     TestAccessMiddleware,
     credentials_file=os.environ["DCP_AUTH_FILE"],
     login_file="/app/login.html",
-    origin="https://pay.example.com",
+    origin=os.environ.get("DCP_PUBLIC_ORIGIN", ""),
 )
 app.mount("/", StaticFiles(directory="/app/web", html=True), name="web")

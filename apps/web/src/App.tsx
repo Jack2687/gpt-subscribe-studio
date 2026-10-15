@@ -22,7 +22,12 @@ export function App() {
     <Container size={1040} py="xl">
       <Group justify="space-between" align="center" mb="lg">
         <div>
-          <Title order={2}>直卡协议</Title>
+          <Title order={2}>
+            直卡协议{" "}
+            <Text span size="sm" c="dimmed" fw={400}>
+              DirectCard Protocol
+            </Text>
+          </Title>
           <Text size="sm" c="dimmed">
             Plus / Go / Pro 在本页填卡，Team 走托管长链。卡号不经过本站服务器。
           </Text>
@@ -69,7 +74,7 @@ export function App() {
       </Tabs>
 
       <Text size="xs" c="dimmed" ta="center" mt="xl">
-        pay.example.com · 独立开通工具
+        直卡协议 · DirectCard Protocol
       </Text>
     </Container>
   );

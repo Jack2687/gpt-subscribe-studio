@@ -1,11 +1,11 @@
-name: gpt-subscribe-studio
+name: ${DCP_COMPOSE_PROJECT:-directcard-protocol}
 
 services:
   api:
     build:
       context: ../..
       dockerfile: deploy/server/Dockerfile
-    image: gpt-subscribe-studio:${DCP_RELEASE:?set DCP_RELEASE}
+    image: directcard-protocol:${DCP_RELEASE:?set DCP_RELEASE}
     ports:
       - "127.0.0.1:18120:8080"
     environment:
@@ -14,10 +14,11 @@ services:
       DCP_ENABLE_PROMO: "false"
       DCP_USE_FAKE: "false"
       DCP_AUTH_FILE: /run/dcp-auth.json
+      DCP_PUBLIC_ORIGIN: ${DCP_PUBLIC_ORIGIN:-}
     volumes:
       - data:/data
-      - /opt/gpt-subscribe-studio/private/proxy-config:/config:rw
-      - /opt/gpt-subscribe-studio/private/container-auth.json:/run/dcp-auth.json:ro
+      - ${DCP_PRIVATE_DIR:?set DCP_PRIVATE_DIR}/proxy-config:/config:rw
+      - ${DCP_PRIVATE_DIR:?set DCP_PRIVATE_DIR}/container-auth.json:/run/dcp-auth.json:ro
     restart: unless-stopped
     init: true
     read_only: true
