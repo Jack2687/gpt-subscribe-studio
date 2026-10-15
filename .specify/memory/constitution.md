@@ -1,6 +1,6 @@
-# 直卡协议 (DirectCard Protocol) Constitution
+# gpt-subscribe-studio Constitution
 
-> 本宪法定义「直卡协议」平台不可妥协的工程与合规原则。所有 `spec` / `plan` / `tasks`
+> 本宪法定义gpt-subscribe-studio平台不可妥协的工程与合规原则。所有 `spec` / `plan` / `tasks`
 > 及代码提交必须通过 Constitution Check。
 
 ## Core Principles

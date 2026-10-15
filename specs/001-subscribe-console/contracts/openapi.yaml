@@ -1,10 +1,10 @@
 openapi: 3.1.0
 
 info:
-  title: DirectCard Protocol API
+  title: gpt-subscribe-studio API
   version: 0.1.0
   description: >
-    「直卡协议」订阅代开编排平台的 HTTP 契约。
+    gpt-subscribe-studio订阅代开编排平台的 HTTP 契约。
     所有接口默认仅对 loopback / 内网开放，公网暴露必须经反向代理 + 鉴权。
     服务端**不接收**卡号、CVV、session 明文持久化内容。
 

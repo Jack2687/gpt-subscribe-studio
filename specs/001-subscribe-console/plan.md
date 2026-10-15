@@ -69,7 +69,7 @@ specs/001-subscribe-console/
 ### Source Code (repository root)
 
 ```text
-direct-card-protocol/
+gpt-subscribe-studio/
 ├── apps/
 │   └── web/                     # 客户控制台 + 运营后台（React + Vite + TS）
 │       ├── src/
