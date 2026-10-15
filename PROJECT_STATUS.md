@@ -289,7 +289,7 @@ SUM:                            68           1130            550           5150
 
 ## 🔗 仓库信息
 
-- **Git 仓库**: gpt-subscribe-studio
+- **Git 仓库**: gpt-subscribe-studio（私有）
 - **最新提交**: 2 commits ahead of origin/main
 - **测试状态**: ✅ 50/50 passed
 

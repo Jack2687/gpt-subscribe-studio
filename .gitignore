@@ -35,7 +35,7 @@ private/
 config/
 proxy-config/
 proxy-gateways.json
-proxy-vendor*.txt
+*proxies*.txt
 *.har
 *.pem
 *.key
