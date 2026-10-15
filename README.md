@@ -254,7 +254,7 @@ gpt-subscribe-studio/
 ### 1. 安装后端依赖
 
 ```bash
-git clone https://github.com/crhywun/gpt-subscribe-studio.git
+# 克隆本仓库后进入项目根目录
 cd gpt-subscribe-studio
 
 # 使用 uv 同步虚拟环境
