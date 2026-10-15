@@ -14,8 +14,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - dcp-data:/data
-      - dcp-config:/config
+      - gss-data:/data
+      - gss-config:/config
     restart: unless-stopped
 
   worker:
@@ -23,13 +23,13 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.api
     image: gpt-subscribe-studio/api:0.1.0
-    command: ["python", "-m", "dcp_orchestrator.worker"]
+    command: ["python", "-m", "gss_orchestrator.worker"]
     env_file: [.env]
     depends_on:
       - api
     volumes:
-      - dcp-data:/data
-      - dcp-config:/config
+      - gss-data:/data
+      - gss-config:/config
     restart: unless-stopped
 
   # 前端：开发期用 `pnpm dev`（apps/web）。生产可加一个静态托管服务 + 反代。
@@ -38,5 +38,5 @@ services:
   #   ports: ["127.0.0.1:5173:80"]
 
 volumes:
-  dcp-data:
-  dcp-config:
+  gss-data:
+  gss-config:

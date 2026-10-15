@@ -106,8 +106,8 @@ class Gateway:
 def proxy_config_path() -> Path:
     return Path(
         os.environ.get(
-            "DCP_PROXY_CONFIG",
-            str(Path(os.environ.get("DCP_CONFIG_DIR", "config")) / "proxy-gateways.json"),
+            "GSS_PROXY_CONFIG",
+            str(Path(os.environ.get("GSS_CONFIG_DIR", "config")) / "proxy-gateways.json"),
         )
     )
 

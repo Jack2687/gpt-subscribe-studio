@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 
-os.environ["DCP_USE_FAKE"] = "1"
+os.environ["GSS_USE_FAKE"] = "1"
 
 from fastapi.testclient import TestClient
 
-from dcp_api.main import create_app
-from dcp_api.store import store
-from dcp_core.vault import vault
+from gss_api.main import create_app
+from gss_api.store import store
+from gss_core.vault import vault
 
 
 def test_session_and_card_token_deliver() -> None:

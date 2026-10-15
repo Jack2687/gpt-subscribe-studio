@@ -16,7 +16,7 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dcp_contracts import (
+from gss_contracts import (
     Job,
     Order,
     OrderStatus,

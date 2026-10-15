@@ -27,7 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-from dcp_contracts import OrderStatus, PaymentStatus, Plan
+from gss_contracts import OrderStatus, PaymentStatus, Plan
 
 
 def _utcnow() -> datetime:
@@ -157,7 +157,7 @@ class PaymentAttemptModel(Base):
 class Database:
     """数据库连接与会话管理。"""
 
-    def __init__(self, url: str = "sqlite:///data/dcp.db") -> None:
+    def __init__(self, url: str = "sqlite:///data/gss.db") -> None:
         self.engine = create_engine(
             url,
             echo=False,
@@ -184,7 +184,7 @@ class Database:
 _db: Optional[Database] = None
 
 
-def init_db(url: str = "sqlite:///data/dcp.db") -> Database:
+def init_db(url: str = "sqlite:///data/gss.db") -> Database:
     """初始化全局数据库实例。"""
     global _db
     _db = Database(url)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dcp_core.config import (
+from gss_core.config import (
     ENV_SENTINEL_VERSION,
     ENV_STRIPE_PUBLISHABLE_KEY,
     load_settings,
@@ -21,9 +21,9 @@ def test_defaults_are_loopback_and_promo_off(tmp_path: Path) -> None:
 
 def test_env_overrides_applied(tmp_path: Path) -> None:
     env = {
-        "DCP_BIND_PORT": "9090",
-        "DCP_ENABLE_PROMO": "true",
-        "DCP_DATA_DIR": str(tmp_path / "data"),
+        "GSS_BIND_PORT": "9090",
+        "GSS_ENABLE_PROMO": "true",
+        "GSS_DATA_DIR": str(tmp_path / "data"),
     }
     settings = load_settings(config_dir=tmp_path, env=env)
     assert settings.bind_port == 9090

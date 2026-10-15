@@ -18,7 +18,7 @@
 | `account_source` | `customer_session`（客户账号） | `platform_account`（平台账号） | 批量注册/交付账号通常违反上游服务条款，可能触发封禁与法律风险 |
 
 **默认值**：`standard` + `customer` + `customer_session`（宪法第 IV 条）。
-`promo` 必须显式开启（`DCP_ENABLE_PROMO=true`）**且**订单上勾选风险确认。
+`promo` 必须显式开启（`GSS_ENABLE_PROMO=true`）**且**订单上勾选风险确认。
 
 ## 3. 平台**不**做的事
 
@@ -40,10 +40,10 @@
 | 护栏 | 位置 | 作用 |
 |---|---|---|
 | 默认只监听回环地址 | `deploy/docker-compose.yml` | 防止无意暴露到公网 |
-| `promo` 默认关闭 | `packages/core/src/dcp_core/config.py` | 高风险模式需显式开启 |
-| promo 风险确认 | `packages/contracts/src/dcp_contracts/models.py` | 订单必须留痕 |
+| `promo` 默认关闭 | `packages/core/src/gss_core/config.py` | 高风险模式需显式开启 |
+| promo 风险确认 | `packages/contracts/src/gss_contracts/models.py` | 订单必须留痕 |
 | 卡字段不出浏览器 | `apps/web/src/card-payment/CardFields.tsx` | 最小化敏感数据接触面 |
-| 统一脱敏日志 | `packages/core/src/dcp_core/redaction.py` | 防止凭证进入日志 |
+| 统一脱敏日志 | `packages/core/src/gss_core/redaction.py` | 防止凭证进入日志 |
 | 发布前敏感信息扫描 | `scripts/release_check.py` | 防止凭证进入仓库 |
 
 ## 6. 上游许可证

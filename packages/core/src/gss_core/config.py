@@ -73,13 +73,13 @@ def load_settings(
     """加载配置。``env`` 便于测试注入。"""
 
     environ = env if env is not None else os.environ
-    config_dir = config_dir or Path(environ.get("DCP_CONFIG_DIR", "config"))
+    config_dir = config_dir or Path(environ.get("GSS_CONFIG_DIR", "config"))
 
     settings = Settings(
-        data_dir=Path(environ.get("DCP_DATA_DIR", "runtime")),
-        bind_host=environ.get("DCP_BIND_HOST", "127.0.0.1"),
-        bind_port=int(environ.get("DCP_BIND_PORT", "8080")),
-        enable_promo_mode=environ.get("DCP_ENABLE_PROMO", "").lower()
+        data_dir=Path(environ.get("GSS_DATA_DIR", "runtime")),
+        bind_host=environ.get("GSS_BIND_HOST", "127.0.0.1"),
+        bind_port=int(environ.get("GSS_BIND_PORT", "8080")),
+        enable_promo_mode=environ.get("GSS_ENABLE_PROMO", "").lower()
         in {"1", "true", "yes"},
         emergency_overrides=_emergency_overrides(environ),
     )
@@ -101,7 +101,7 @@ def use_fake_adapters(env: Optional[Dict[str, str]] = None) -> bool:
     """独立运行：默认走本项目自己的 ChatGPT/Stripe 客户端；测试可开 Fake。"""
 
     environ = env if env is not None else os.environ
-    return environ.get("DCP_USE_FAKE", "").lower() in {"1", "true", "yes"}
+    return environ.get("GSS_USE_FAKE", "").lower() in {"1", "true", "yes"}
 
 
 def missing_upstreams(settings: Settings) -> List[str]:

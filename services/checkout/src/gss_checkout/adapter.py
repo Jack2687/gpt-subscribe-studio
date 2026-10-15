@@ -6,18 +6,18 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import List, Optional
 
-from dcp_contracts import (
+from gss_contracts import (
     AdapterCapabilities,
     BillingMode,
     CheckoutRequest,
     CheckoutResult,
     Plan,
 )
-from dcp_contracts.errors import DomainError, ErrorCode
-from dcp_core.billing import address_for
-from dcp_core.chatgpt import ChatGPTClient, clamp_team_seats
-from dcp_core.countries import country_codes, currency_for
-from dcp_core.proxies import align_proxy_region, configured_proxy, rotate_proxy_sid, session_proxy
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.billing import address_for
+from gss_core.chatgpt import ChatGPTClient, clamp_team_seats
+from gss_core.countries import country_codes, currency_for
+from gss_core.proxies import align_proxy_region, configured_proxy, rotate_proxy_sid, session_proxy
 
 _LIST_PRICE = {
     Plan.PLUS: Decimal("20.00"),

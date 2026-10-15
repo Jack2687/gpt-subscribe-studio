@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from dcp_contracts import AdapterCapabilities, SubscriptionInfo
-from dcp_contracts.errors import DomainError, ErrorCode
-from dcp_core.chatgpt import ChatGPTClient
-from dcp_core.proxies import configured_proxy
+from gss_contracts import AdapterCapabilities, SubscriptionInfo
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.chatgpt import ChatGPTClient
+from gss_core.proxies import configured_proxy
 
 _ACTIVE_PLANS = {
     "plus",

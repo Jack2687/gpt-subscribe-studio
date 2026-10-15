@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from dcp_core.session_token import parse_session, parse_session_bundle
+from gss_core.session_token import parse_session, parse_session_bundle
 
 
 def test_plain_token() -> None:

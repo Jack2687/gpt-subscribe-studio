@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-COOKIE = "__Host-dcp_session"
+COOKIE = "__Host-gss_session"
 SESSION_SECONDS = 12 * 60 * 60
 
 

@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from dcp_api.main import create_app
+from gss_api.main import create_app
 
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setenv("DCP_PROXY_CONFIG", str(tmp_path / "proxy-gateways.json"))
+    monkeypatch.setenv("GSS_PROXY_CONFIG", str(tmp_path / "proxy-gateways.json"))
     return TestClient(create_app())
 
 

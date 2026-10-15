@@ -6,10 +6,10 @@ from urllib.parse import parse_qs
 
 import pytest
 
-from dcp_contracts.errors import DomainError, ErrorCode
-from dcp_core.billing import address_for
-from dcp_core.money import quote_from_payload
-from dcp_core.chatgpt import (
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.billing import address_for
+from gss_core.money import quote_from_payload
+from gss_core.chatgpt import (
     ChatGPTClient,
     checkout_confirm_blocked,
     checkout_confirm_blocked_advice,
@@ -26,16 +26,16 @@ from dcp_core.chatgpt import (
     stripe_checkout_id,
     stripe_verify_url,
 )
-from dcp_core.countries import country_codes, currency_for, is_supported
-from dcp_core.proxies import (
+from gss_core.countries import country_codes, currency_for, is_supported
+from gss_core.proxies import (
     align_proxy_region,
     new_proxy_sid,
     proxy_exit_region,
     rewrite_proxy_exit,
     rotate_proxy_sid,
 )
-from dcp_core.sentinel import extract_attestation, extract_build, header_value, mint
-from dcp_core.session_token import parse_session_bundle
+from gss_core.sentinel import extract_attestation, extract_build, header_value, mint
+from gss_core.session_token import parse_session_bundle
 
 
 def _jwt(account_id: str) -> str:
@@ -275,7 +275,7 @@ def test_header_value_strips_private_keys() -> None:
 
 
 def test_mint_without_node_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SENTINEL_NODE", "/nonexistent-dcp-node")
+    monkeypatch.setenv("SENTINEL_NODE", "/nonexistent-gss-node")
     assert mint(flow="chatgpt_checkout", device_id="did", user_agent="ua") == {}
 
 
@@ -380,7 +380,7 @@ def test_create_checkout_sends_sentinel(monkeypatch: pytest.MonkeyPatch) -> None
         flows.append(str(kwargs.get("flow") or ""))
         return {"p": "pow", "c": "chal", "t": "turn", "id": kwargs.get("device_id"), "flow": kwargs.get("flow")}
 
-    monkeypatch.setattr("dcp_core.chatgpt.mint", fake_mint)
+    monkeypatch.setattr("gss_core.chatgpt.mint", fake_mint)
     html = (
         'prod-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb '
         'data-seq="111" "webDeploymentAttestation":"sig.payload"'
@@ -410,7 +410,7 @@ def test_create_checkout_sends_sentinel(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_create_checkout_maps_pro_max_to_chatgptpromax(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dcp_core.chatgpt.mint",
+        "gss_core.chatgpt.mint",
         lambda **kwargs: {
             "p": "pow",
             "c": "chal",
@@ -430,7 +430,7 @@ def test_create_checkout_maps_pro_max_to_chatgptpromax(monkeypatch: pytest.Monke
 
 def test_create_checkout_jp_uses_openai_llc(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dcp_core.chatgpt.mint",
+        "gss_core.chatgpt.mint",
         lambda **kwargs: {
             "p": "pow",
             "c": "chal",
@@ -459,7 +459,7 @@ def test_stripe_automatic_payment_methods_conflict_is_mapped() -> None:
         }
     }
     with pytest.raises(DomainError) as exc:
-        from dcp_core.chatgpt import _raise_stripe
+        from gss_core.chatgpt import _raise_stripe
 
         _raise_stripe(payload, 400)
     assert "采集模式和确认接口不一致" in str(exc.value)
@@ -467,7 +467,7 @@ def test_stripe_automatic_payment_methods_conflict_is_mapped() -> None:
 
 
 def test_stripe_missing_expected_amount_is_mapped() -> None:
-    from dcp_core.chatgpt import _raise_stripe
+    from gss_core.chatgpt import _raise_stripe
 
     with pytest.raises(DomainError) as exc:
         _raise_stripe(
@@ -498,7 +498,7 @@ def test_team_seats_and_hosted_url() -> None:
 
 def test_create_checkout_maps_team_seats_and_promo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dcp_core.chatgpt.mint",
+        "gss_core.chatgpt.mint",
         lambda **kwargs: {
             "p": "pow",
             "c": "chal",
@@ -539,7 +539,7 @@ def test_stripe_verify_url_matches_har_return_url() -> None:
 
 def test_create_checkout_maps_go_to_chatgptgoplan(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dcp_core.chatgpt.mint",
+        "gss_core.chatgpt.mint",
         lambda **kwargs: {
             "p": "pow",
             "c": "chal",
@@ -558,7 +558,7 @@ def test_create_checkout_maps_go_to_chatgptgoplan(monkeypatch: pytest.MonkeyPatc
 
 def test_create_checkout_maps_go_lite_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dcp_core.chatgpt.mint",
+        "gss_core.chatgpt.mint",
         lambda **kwargs: {
             "p": "pow",
             "c": "chal",
@@ -576,7 +576,7 @@ def test_create_checkout_maps_go_lite_plan(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_create_checkout_fails_closed_without_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("dcp_core.chatgpt.mint", lambda **kwargs: {})
+    monkeypatch.setattr("gss_core.chatgpt.mint", lambda **kwargs: {})
     client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
     client._http = _FakeHttp("")
     with pytest.raises(DomainError) as exc:
@@ -586,7 +586,7 @@ def test_create_checkout_fails_closed_without_sentinel(monkeypatch: pytest.Monke
 
 def _allow_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dcp_core.chatgpt.mint",
+        "gss_core.chatgpt.mint",
         lambda **kwargs: {
             "p": "pow",
             "c": "chal",
@@ -759,7 +759,7 @@ def test_payment_intent_from_payment_page_ignores_cs_id() -> None:
 
 
 def test_payment_checkout_body_matches_har_and_headers_carry_codex_identity() -> None:
-    from dcp_core.chatgpt import ChatGPTClient, _checkout_body
+    from gss_core.chatgpt import ChatGPTClient, _checkout_body
 
     body = _checkout_body(plan="pro_lite", country="US", currency="USD")
     assert body["checkout_ui_mode"] == "custom"
@@ -774,7 +774,7 @@ def test_payment_checkout_body_matches_har_and_headers_carry_codex_identity() ->
 
 
 def test_approval_retry_only_without_payment_intent() -> None:
-    from dcp_payment.adapter import _approval_retryable
+    from gss_payment.adapter import _approval_retryable
 
     failed = {"submission_attempt": {"state": "failed", "error": {"code": "checkout_approval_internal_error"}}}
     assert _approval_retryable(failed) is True
@@ -785,7 +785,7 @@ def test_approval_retry_only_without_payment_intent() -> None:
 
 
 def test_stripe_custom_confirm_syncs_billing_tax_first(monkeypatch) -> None:
-    from dcp_core.chatgpt import ChatGPTClient
+    from gss_core.chatgpt import ChatGPTClient
 
     calls: list[tuple[str, dict]] = []
 
@@ -826,7 +826,7 @@ def test_stripe_custom_confirm_syncs_billing_tax_first(monkeypatch) -> None:
 
 
 def test_decline_message_keeps_code_and_adds_advice() -> None:
-    from dcp_core.chatgpt import decline_message
+    from gss_core.chatgpt import decline_message
 
     known = decline_message("do_not_honor")
     assert known.startswith("发卡行拒绝: do_not_honor。")

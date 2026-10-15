@@ -229,11 +229,11 @@ uv run pytest -v
 
 # 3. 启动 API（测试模式，使用 Fake adapter）
 cd services/api
-uv run uvicorn dcp_api.main:app --reload
+uv run uvicorn gss_api.main:app --reload
 
 # 4. 启动 Worker（测试模式）
 cd services/orchestrator
-uv run python -m dcp_orchestrator.worker --fake --poll-interval 5
+uv run python -m gss_orchestrator.worker --fake --poll-interval 5
 
 # 5. 创建订单
 curl -X POST http://127.0.0.1:8080/api/orders \

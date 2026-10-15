@@ -4,14 +4,14 @@ import os
 
 from fastapi.staticfiles import StaticFiles
 
-from dcp_api.main import create_app
-from dcp_api.test_access import TestAccessMiddleware
+from gss_api.main import create_app
+from gss_api.test_access import TestAccessMiddleware
 
 app = create_app()
 app.add_middleware(
     TestAccessMiddleware,
-    credentials_file=os.environ["DCP_AUTH_FILE"],
+    credentials_file=os.environ["GSS_AUTH_FILE"],
     login_file="/app/login.html",
-    origin=os.environ.get("DCP_PUBLIC_ORIGIN", ""),
+    origin=os.environ.get("GSS_PUBLIC_ORIGIN", ""),
 )
 app.mount("/", StaticFiles(directory="/app/web", html=True), name="web")

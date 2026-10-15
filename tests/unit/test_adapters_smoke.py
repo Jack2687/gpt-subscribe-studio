@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from dcp_account import FakeAccountAdapter, UpstreamAccountAdapter
-from dcp_checkout import FakeCheckoutAdapter, UpstreamCheckoutAdapter
-from dcp_contracts import (
+from gss_account import FakeAccountAdapter, UpstreamAccountAdapter
+from gss_checkout import FakeCheckoutAdapter, UpstreamCheckoutAdapter
+from gss_contracts import (
     BillingMode,
     CheckoutRequest,
     ErrorCode,
@@ -16,9 +16,9 @@ from dcp_contracts import (
     PaymentStatus,
     Plan,
 )
-from dcp_contracts.errors import DomainError
-from dcp_payment import FakePaymentAdapter, UpstreamPaymentAdapter
-from dcp_payment.adapter import _confirmation_token
+from gss_contracts.errors import DomainError
+from gss_payment import FakePaymentAdapter, UpstreamPaymentAdapter
+from gss_payment.adapter import _confirmation_token
 
 
 ALL_ADAPTERS = [FakeCheckoutAdapter(), FakePaymentAdapter(), FakeAccountAdapter()]

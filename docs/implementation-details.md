@@ -294,7 +294,7 @@ logger.info(f"Processing order {order_id} with session {session}")
 #### 7.2 默认安全配置
 
 - 只监听 `127.0.0.1`（不对外暴露）
-- 促销模式默认关闭（`DCP_ENABLE_PROMO_MODE=false`）
+- 促销模式默认关闭（`GSS_ENABLE_PROMO_MODE=false`）
 - 促销订单必须 `risk_acknowledged=true`
 
 #### 7.3 审计与追踪

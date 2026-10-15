@@ -97,7 +97,7 @@ export function StripeCardFields({
           layout: "tabs",
           wallets: { applePay: "never", googlePay: "never" },
         });
-        paymentEl.mount("#dcp-payment");
+        paymentEl.mount("#gss-payment");
         setHint("卡片由 Stripe 托管输入，不会发到本站。");
         onReadyRef.current({
           tokenize: async (billing: BillingDetails) => {
@@ -151,7 +151,7 @@ export function StripeCardFields({
 
   return (
     <>
-      <div id="dcp-payment" />
+      <div id="gss-payment" />
       {hint && !error && (
         <Text size="xs" c="dimmed" mt="xs">
           {hint}
@@ -239,9 +239,9 @@ function bodyHasStripeVersion(body: unknown): boolean {
 }
 
 function avoidDualStripeVersion(): void {
-  const g = window as unknown as { __dcpStripeVersionPatched?: boolean };
-  if (g.__dcpStripeVersionPatched) return;
-  g.__dcpStripeVersionPatched = true;
+  const g = window as unknown as { __gssStripeVersionPatched?: boolean };
+  if (g.__gssStripeVersionPatched) return;
+  g.__gssStripeVersionPatched = true;
   const origFetch = window.fetch.bind(window);
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -257,21 +257,21 @@ function avoidDualStripeVersion(): void {
   const origSet = proto.setRequestHeader;
   const origSend = proto.send;
   proto.open = function (this: XMLHttpRequest, method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null) {
-    (this as XMLHttpRequest & { __dcpUrl?: string }).__dcpUrl = String(url);
+    (this as XMLHttpRequest & { __gssUrl?: string }).__gssUrl = String(url);
     return origOpen.call(this, method, url, async ?? true, username, password);
   };
   proto.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
     if (name.toLowerCase() === "stripe-version") {
-      (this as XMLHttpRequest & { __dcpVer?: string }).__dcpVer = value;
+      (this as XMLHttpRequest & { __gssVer?: string }).__gssVer = value;
       return;
     }
     return origSet.call(this, name, value);
   };
   proto.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
-    const extra = this as XMLHttpRequest & { __dcpUrl?: string; __dcpVer?: string };
+    const extra = this as XMLHttpRequest & { __gssUrl?: string; __gssVer?: string };
     const text = typeof body === "string" ? body : "";
-    const dual = String(extra.__dcpUrl || "").includes("api.stripe.com") && text.includes("_stripe_version");
-    if (extra.__dcpVer && !dual) origSet.call(this, "Stripe-Version", extra.__dcpVer);
+    const dual = String(extra.__gssUrl || "").includes("api.stripe.com") && text.includes("_stripe_version");
+    if (extra.__gssVer && !dual) origSet.call(this, "Stripe-Version", extra.__gssVer);
     return origSend.call(this, body as XMLHttpRequestBodyInit);
   };
 }
@@ -286,7 +286,7 @@ function loadStripe(): Promise<void> {
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[data-dcp-stripe="${src}"]`);
+    const existing = document.querySelector(`script[data-gss-stripe="${src}"]`);
     if (existing) {
       existing.addEventListener("load", () => resolve());
       existing.addEventListener("error", () => reject(new Error("Stripe.js 加载失败")));
@@ -295,7 +295,7 @@ function loadScript(src: string): Promise<void> {
     const script = document.createElement("script");
     script.src = src;
     script.async = true;
-    script.dataset.dcpStripe = src;
+    script.dataset.gssStripe = src;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Stripe.js 加载失败"));
     document.head.appendChild(script);

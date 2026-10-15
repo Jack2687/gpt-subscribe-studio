@@ -6,9 +6,9 @@ import logging
 
 from fastapi import FastAPI
 
-from dcp_core import install_logging_filter
-from dcp_core.config import load_settings, missing_upstreams, use_fake_adapters
-from dcp_core.proxies import GatewayStore
+from gss_core import install_logging_filter
+from gss_core.config import load_settings, missing_upstreams, use_fake_adapters
+from gss_core.proxies import GatewayStore
 
 from .routers import orders, proxies
 
@@ -16,20 +16,20 @@ __version__ = "0.1.0"
 
 
 def _ensure_info_logging() -> None:
-    dcp = logging.getLogger("dcp")
-    dcp.setLevel(logging.INFO)
-    if not dcp.handlers:
+    gss = logging.getLogger("gss")
+    gss.setLevel(logging.INFO)
+    if not gss.handlers:
         handler = logging.StreamHandler()
         handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-        dcp.addHandler(handler)
-    dcp.propagate = False
+        gss.addHandler(handler)
+    gss.propagate = False
 
 
 def create_app() -> FastAPI:
     install_logging_filter()
     _ensure_info_logging()
-    install_logging_filter(logging.getLogger("dcp"))
+    install_logging_filter(logging.getLogger("gss"))
     settings = load_settings()
 
     app = FastAPI(

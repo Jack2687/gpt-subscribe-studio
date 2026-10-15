@@ -1,24 +1,24 @@
-name: ${DCP_COMPOSE_PROJECT:-gpt-subscribe-studio}
+name: ${GSS_COMPOSE_PROJECT:-gpt-subscribe-studio}
 
 services:
   api:
     build:
       context: ../..
       dockerfile: deploy/server/Dockerfile
-    image: gpt-subscribe-studio:${DCP_RELEASE:?set DCP_RELEASE}
+    image: gpt-subscribe-studio:${GSS_RELEASE:?set GSS_RELEASE}
     ports:
       - "127.0.0.1:18120:8080"
     environment:
-      DCP_DATA_DIR: /data
-      DCP_CONFIG_DIR: /config
-      DCP_ENABLE_PROMO: "false"
-      DCP_USE_FAKE: "false"
-      DCP_AUTH_FILE: /run/dcp-auth.json
-      DCP_PUBLIC_ORIGIN: ${DCP_PUBLIC_ORIGIN:-}
+      GSS_DATA_DIR: /data
+      GSS_CONFIG_DIR: /config
+      GSS_ENABLE_PROMO: "false"
+      GSS_USE_FAKE: "false"
+      GSS_AUTH_FILE: /run/gss-auth.json
+      GSS_PUBLIC_ORIGIN: ${GSS_PUBLIC_ORIGIN:-}
     volumes:
       - data:/data
-      - ${DCP_PRIVATE_DIR:?set DCP_PRIVATE_DIR}/proxy-config:/config:rw
-      - ${DCP_PRIVATE_DIR:?set DCP_PRIVATE_DIR}/container-auth.json:/run/dcp-auth.json:ro
+      - ${GSS_PRIVATE_DIR:?set GSS_PRIVATE_DIR}/proxy-config:/config:rw
+      - ${GSS_PRIVATE_DIR:?set GSS_PRIVATE_DIR}/container-auth.json:/run/gss-auth.json:ro
     restart: unless-stopped
     init: true
     read_only: true

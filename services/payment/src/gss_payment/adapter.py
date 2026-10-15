@@ -6,10 +6,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from dcp_contracts import AdapterCapabilities, PaymentRequest, PaymentResult, PaymentStatus
-from dcp_contracts.errors import DomainError, ErrorCode
-from dcp_core.billing import address_for
-from dcp_core.chatgpt import (
+from gss_contracts import AdapterCapabilities, PaymentRequest, PaymentResult, PaymentStatus
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.billing import address_for
+from gss_core.chatgpt import (
     APP_BASE,
     ChatGPTClient,
     checkout_confirm_blocked,
@@ -24,8 +24,8 @@ from dcp_core.chatgpt import (
     submission_state,
     _processor_from_checkout_url,
 )
-from dcp_core.countries import currency_for, locale_for, timezone_for
-from dcp_core.proxies import align_proxy_region, configured_proxy, session_proxy
+from gss_core.countries import currency_for, locale_for, timezone_for
+from gss_core.proxies import align_proxy_region, configured_proxy, session_proxy
 
 
 class PaymentAdapterBase:
@@ -46,7 +46,7 @@ class PaymentAdapterBase:
         )
 
 
-logger = logging.getLogger("dcp.payment")
+logger = logging.getLogger("gss.payment")
 
 _APPROVAL_RETRIES = 1
 

@@ -8,15 +8,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements.txt \
-    && useradd --create-home --uid 10001 dcp \
+    && useradd --create-home --uid 10001 gss \
     && mkdir -p /data /config \
-    && chown dcp:dcp /data /config \
+    && chown gss:gss /data /config \
     && node --version
 COPY packages /app/packages
 COPY services /app/services
 COPY deploy/server/app.py /app/server.py
 COPY deploy/server/login.html /app/login.html
 COPY apps/web/dist /app/web
-USER dcp
+USER gss
 EXPOSE 8080
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-access-log"]

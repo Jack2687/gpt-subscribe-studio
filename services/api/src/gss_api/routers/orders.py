@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, status
 
-from dcp_contracts import (
+from gss_contracts import (
     AccountSource,
     BillingMode,
     CardSource,
@@ -18,21 +18,21 @@ from dcp_contracts import (
     OrderStatus,
     Plan,
 )
-from dcp_contracts.errors import DomainError, ErrorCode
-from dcp_core.config import load_settings
-from dcp_core.countries import is_supported, normalize_country
-from dcp_core.proxies import align_proxy_region, configured_proxy, session_proxy
-from dcp_core.chatgpt import clamp_team_seats
-from dcp_core.session_token import parse_session_bundle
-from dcp_core.vault import OrderSecrets, vault
-from dcp_orchestrator.pipeline import apply_payment_result, assert_deliverable
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.config import load_settings
+from gss_core.countries import is_supported, normalize_country
+from gss_core.proxies import align_proxy_region, configured_proxy, session_proxy
+from gss_core.chatgpt import clamp_team_seats
+from gss_core.session_token import parse_session_bundle
+from gss_core.vault import OrderSecrets, vault
+from gss_orchestrator.pipeline import apply_payment_result, assert_deliverable
 
 from ..runtime import build_pipeline
 from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut, OrderPayRequest, SubscriptionOut
 from ..store import store
 
 router = APIRouter(prefix="/api", tags=["orders"])
-logger = logging.getLogger("dcp.orders")
+logger = logging.getLogger("gss.orders")
 
 
 def _to_mode(mode_in: ModeIn) -> Mode:

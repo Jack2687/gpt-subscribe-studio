@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dcp_account import FakeAccountAdapter, UpstreamAccountAdapter
-from dcp_checkout import FakeCheckoutAdapter, UpstreamCheckoutAdapter
-from dcp_core.config import use_fake_adapters
-from dcp_orchestrator.pipeline import OrderPipeline, PipelineDeps
-from dcp_payment import FakePaymentAdapter, UpstreamPaymentAdapter
+from gss_account import FakeAccountAdapter, UpstreamAccountAdapter
+from gss_checkout import FakeCheckoutAdapter, UpstreamCheckoutAdapter
+from gss_core.config import use_fake_adapters
+from gss_orchestrator.pipeline import OrderPipeline, PipelineDeps
+from gss_payment import FakePaymentAdapter, UpstreamPaymentAdapter
 
 
 def build_pipeline() -> OrderPipeline:

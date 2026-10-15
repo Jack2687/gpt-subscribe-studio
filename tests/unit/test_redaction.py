@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dcp_core import MASK, redact, redact_mapping
+from gss_core import MASK, redact, redact_mapping
 
 
 def test_bearer_header_redacted() -> None:

@@ -32,19 +32,19 @@ sys.path.insert(0, str(root / "services/checkout/src"))
 sys.path.insert(0, str(root / "services/payment/src"))
 sys.path.insert(0, str(root / "services/account/src"))
 
-from dcp_core import install_logging_filter
-from dcp_core.config import load_settings, missing_upstreams
-from dcp_api.db import init_db, get_db
-from dcp_api.repository import OrderRepository
-from dcp_contracts import OrderStatus, PaymentStatus, Job
-from dcp_contracts.errors import DomainError
+from gss_core import install_logging_filter
+from gss_core.config import load_settings, missing_upstreams
+from gss_api.db import init_db, get_db
+from gss_api.repository import OrderRepository
+from gss_contracts import OrderStatus, PaymentStatus, Job
+from gss_contracts.errors import DomainError
 
-from dcp_orchestrator.pipeline import OrderPipeline, PipelineDeps, next_order_status, assert_deliverable
-from dcp_checkout.adapter import UpstreamCheckoutAdapter, FakeCheckoutAdapter
-from dcp_payment.adapter import UpstreamPaymentAdapter, FakePaymentAdapter
-from dcp_account.adapter import UpstreamAccountAdapter, FakeAccountAdapter
+from gss_orchestrator.pipeline import OrderPipeline, PipelineDeps, next_order_status, assert_deliverable
+from gss_checkout.adapter import UpstreamCheckoutAdapter, FakeCheckoutAdapter
+from gss_payment.adapter import UpstreamPaymentAdapter, FakePaymentAdapter
+from gss_account.adapter import UpstreamAccountAdapter, FakeAccountAdapter
 
-logger = logging.getLogger("dcp_orchestrator.worker")
+logger = logging.getLogger("gss_orchestrator.worker")
 
 
 def self_check() -> list[str]:
@@ -241,7 +241,7 @@ class WorkerEngine:
         )
         
         # 记录支付尝试
-        from dcp_contracts import PaymentAttempt
+        from gss_contracts import PaymentAttempt
         attempt = PaymentAttempt(
             order_id=order.id,
             provider="direct_card",
@@ -301,7 +301,7 @@ def run(poll_interval: float = 5.0, once: bool = False, use_fake: bool = False) 
         return
     
     # 初始化数据库
-    db_path = os.environ.get("DCP_DB_PATH", "data/dcp.db")
+    db_path = os.environ.get("GSS_DB_PATH", "data/gss.db")
     db_url = f"sqlite:///{db_path}"
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     init_db(db_url)

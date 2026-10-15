@@ -11,7 +11,7 @@ export interface HistoryRecord {
   at: number;
 }
 
-const KEY = "dcp.history.v1";
+const KEY = "gss.history.v1";
 const MAX = 50;
 
 export const SUCCESS_STATUSES = ["delivered", "active"];
@@ -21,9 +21,12 @@ export function isSettled(status: string): boolean {
   return SUCCESS_STATUSES.includes(status) || FAILED_STATUSES.includes(status);
 }
 
+// 改名前的旧键，只读一次用来保留已有的开通记录。
+const LEGACY_KEY = "dcp.history.v1";
+
 export function loadHistory(): HistoryRecord[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(KEY) || "[]");
+    const parsed = JSON.parse(localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY) ?? "[]");
     return Array.isArray(parsed) ? (parsed as HistoryRecord[]) : [];
   } catch {
     return [];

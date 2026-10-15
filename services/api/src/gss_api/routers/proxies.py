@@ -8,7 +8,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from dcp_core.proxies import ROLES, GatewayStore, describe_gateway, gateway_from_input
+from gss_core.proxies import ROLES, GatewayStore, describe_gateway, gateway_from_input
 
 router = APIRouter(prefix="/api/settings/proxies", tags=["settings"])
 

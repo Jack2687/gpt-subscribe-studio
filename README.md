@@ -107,9 +107,9 @@ python scripts/release_check.py
 | 护栏 | 位置 |
 |---|---|
 | 默认只监听回环地址 | `deploy/docker-compose.yml` |
-| `promo` 默认关闭 + 风险确认 | `packages/core/src/dcp_core/config.py`、`packages/contracts/.../models.py` |
+| `promo` 默认关闭 + 风险确认 | `packages/core/src/gss_core/config.py`、`packages/contracts/.../models.py` |
 | 卡字段不出浏览器 | `apps/web/src/card-payment/CardFields.tsx` |
-| 统一脱敏日志 | `packages/core/src/dcp_core/redaction.py` |
+| 统一脱敏日志 | `packages/core/src/gss_core/redaction.py` |
 | 发布前敏感信息扫描 | `scripts/release_check.py` |
 | adapter 能力与失败模式自述 | `services/*/src/*/adapter.py` |
 

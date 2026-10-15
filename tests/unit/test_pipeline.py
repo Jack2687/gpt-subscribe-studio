@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from dcp_account import FakeAccountAdapter
-from dcp_checkout import FakeCheckoutAdapter
-from dcp_contracts import (
+from gss_account import FakeAccountAdapter
+from gss_checkout import FakeCheckoutAdapter
+from gss_contracts import (
     BillingMode,
     CardSource,
     Mode,
@@ -17,14 +17,14 @@ from dcp_contracts import (
     Plan,
     SubscriptionInfo,
 )
-from dcp_contracts.errors import DomainError
-from dcp_orchestrator.pipeline import (
+from gss_contracts.errors import DomainError
+from gss_orchestrator.pipeline import (
     OrderPipeline,
     PipelineDeps,
     assert_deliverable,
     next_order_status,
 )
-from dcp_payment import FakePaymentAdapter
+from gss_payment import FakePaymentAdapter
 
 
 def build_deps(payment_script=None, active=True) -> PipelineDeps:
@@ -89,7 +89,7 @@ def test_promo_without_acknowledgement_blocked_before_checkout() -> None:
 
 
 def test_next_order_status_mapping() -> None:
-    from dcp_orchestrator.pipeline import apply_payment_result
+    from gss_orchestrator.pipeline import apply_payment_result
 
     assert next_order_status(OrderStatus.PAYING, PaymentStatus.SUCCEEDED) is OrderStatus.VERIFYING
     assert apply_payment_result(OrderStatus.AWAITING_PAYMENT, PaymentStatus.SUCCEEDED) is OrderStatus.VERIFYING

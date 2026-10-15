@@ -33,14 +33,14 @@ vim deploy/.env
 
 ```env
 # 数据库路径
-DCP_DB_PATH=data/dcp.db
+GSS_DB_PATH=data/gss.db
 
 # 服务绑定地址（默认只监听 localhost）
-DCP_BIND_HOST=127.0.0.1
-DCP_BIND_PORT=8080
+GSS_BIND_HOST=127.0.0.1
+GSS_BIND_PORT=8080
 
 # 促销模式（默认关闭，需要显式开启）
-DCP_ENABLE_PROMO_MODE=false
+GSS_ENABLE_PROMO_MODE=false
 
 # 上游配置（可选，未配置时使用 Fake adapter）
 UPSTREAM_GPT_REGISTER_TOOL_PATH=/path/to/GPT-Register-Tool
@@ -67,7 +67,7 @@ uv run --python 3.12 --with pytest pytest tests/integration/ -v
 cd services/api
 
 # 启动开发服务器
-uv run --python 3.12 uvicorn dcp_api.main:app --reload --host 127.0.0.1 --port 8080
+uv run --python 3.12 uvicorn gss_api.main:app --reload --host 127.0.0.1 --port 8080
 ```
 
 访问 http://127.0.0.1:8080/docs 查看 API 文档。
@@ -81,10 +81,10 @@ uv run --python 3.12 uvicorn dcp_api.main:app --reload --host 127.0.0.1 --port 8
 cd services/orchestrator
 
 # 启动 worker（测试模式，使用 Fake adapter）
-uv run --python 3.12 python -m dcp_orchestrator.worker --fake --poll-interval 5
+uv run --python 3.12 python -m gss_orchestrator.worker --fake --poll-interval 5
 
 # 或者使用真实 adapter（需要配置上游路径）
-uv run --python 3.12 python -m dcp_orchestrator.worker --poll-interval 5
+uv run --python 3.12 python -m gss_orchestrator.worker --poll-interval 5
 ```
 
 Worker 会轮询数据库中的待处理任务并驱动状态机推进。
@@ -226,14 +226,14 @@ UPSTREAM_ZKKY_PATH=/path/to/zkky
 A: 在 `.env` 中设置：
 
 ```env
-DCP_ENABLE_PROMO_MODE=true
+GSS_ENABLE_PROMO_MODE=true
 ```
 
 然后创建订单时指定 `billing_mode: "promo"`，并且必须设置 `risk_acknowledged: true`。
 
 ### Q: 数据存储在哪里？
 
-A: SQLite 数据库文件位于 `data/dcp.db`（可通过 `DCP_DB_PATH` 配置）。
+A: SQLite 数据库文件位于 `data/gss.db`（可通过 `GSS_DB_PATH` 配置）。
 
 ### Q: 如何查看详细日志？
 
@@ -275,7 +275,7 @@ A: 50 个测试通过意味着：
 - 账号里需要带供应商的地区和 SID 参数，例如 `acct-region-US-sid-abc123`。程序能识别 `region` / `country`、`sid` / `session` 这几种常见写法，替换时保留你供应商原来的键名和大小写。
 - 每个订单创建时，程序把地区换成你选的地区、SID 换成新的随机值，同一订单内保持不变；代理出口地区必须和 session 导出国家一致。
 - 账号里没有地区或 SID 参数时，程序会在末尾追加 `-region-XX`、`-sid-随机值`，请确认你的供应商支持这个写法。
-- 代理保存在服务端的配置目录（`DCP_CONFIG_DIR`，容器内为 `/config`），页面和接口都不会回显账号密码。
+- 代理保存在服务端的配置目录（`GSS_CONFIG_DIR`，容器内为 `/config`），页面和接口都不会回显账号密码。
 - 「测试连接」只返回出口 IP 和耗时，是否属于目标地区请自行确认。
 
 ## 服务器部署（`deploy/server`）
@@ -284,7 +284,7 @@ A: 50 个测试通过意味着：
 
 | 变量 | 说明 |
 |---|---|
-| `DCP_RELEASE` | 镜像标签（必填），例如构建时间戳 |
-| `DCP_PRIVATE_DIR` | 存放 `container-auth.json`（访问密码）和 `proxy-config/` 的目录（必填，不要放进仓库） |
-| `DCP_COMPOSE_PROJECT` | compose 项目名，默认 `gpt-subscribe-studio` |
-| `DCP_PUBLIC_ORIGIN` | 选填，例如 `https://你的域名`。不填时按「请求 Origin 与 Host 同源」校验，部署到任何域名都能用 |
+| `GSS_RELEASE` | 镜像标签（必填），例如构建时间戳 |
+| `GSS_PRIVATE_DIR` | 存放 `container-auth.json`（访问密码）和 `proxy-config/` 的目录（必填，不要放进仓库） |
+| `GSS_COMPOSE_PROJECT` | compose 项目名，默认 `gpt-subscribe-studio` |
+| `GSS_PUBLIC_ORIGIN` | 选填，例如 `https://你的域名`。不填时按「请求 Origin 与 Host 同源」校验，部署到任何域名都能用 |

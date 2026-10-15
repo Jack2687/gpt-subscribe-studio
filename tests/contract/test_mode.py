@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dcp_contracts import (
+from gss_contracts import (
     AccountSource,
     BillingMode,
     CardSource,

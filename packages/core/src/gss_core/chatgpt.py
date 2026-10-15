@@ -13,13 +13,13 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
-from dcp_contracts.errors import DomainError, ErrorCode
-from dcp_core.billing import address_for
-from dcp_core.countries import currency_for, locale_for, timezone_for
-from dcp_core.money import quote_from_payload
-from dcp_core.redaction import redact_sensitive
-from dcp_core.sentinel import extract_attestation, extract_build, header_value, mint, so_header_value
-from dcp_core.session_token import SessionBundle, parse_session_bundle
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.billing import address_for
+from gss_core.countries import currency_for, locale_for, timezone_for
+from gss_core.money import quote_from_payload
+from gss_core.redaction import redact_sensitive
+from gss_core.sentinel import extract_attestation, extract_build, header_value, mint, so_header_value
+from gss_core.session_token import SessionBundle, parse_session_bundle
 
 APP_BASE = "https://chatgpt.com"
 STRIPE_BASE = "https://api.stripe.com"
@@ -37,7 +37,7 @@ STRIPE_CHECKOUT_API_VERSION = (
     "2025-03-31.basil; checkout_server_update_beta=v1; "
     "checkout_manual_approval_preview=v1"
 )
-logger = logging.getLogger("dcp.chatgpt")
+logger = logging.getLogger("gss.chatgpt")
 _PLAN_NAME = {
     "plus": "chatgptplusplan",
     "go": "chatgptgoplan",

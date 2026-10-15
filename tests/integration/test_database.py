@@ -11,9 +11,9 @@ sys.path.insert(0, str(root / "packages/contracts/src"))
 sys.path.insert(0, str(root / "packages/core/src"))
 sys.path.insert(0, str(root / "services/api/src"))
 
-from dcp_api.db import init_db
-from dcp_api.repository import OrderRepository
-from dcp_contracts import Order, OrderStatus, Plan, Mode
+from gss_api.db import init_db
+from gss_api.repository import OrderRepository
+from gss_contracts import Order, OrderStatus, Plan, Mode
 
 
 def test_database():

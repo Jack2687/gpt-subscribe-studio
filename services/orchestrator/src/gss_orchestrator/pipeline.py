@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from dcp_contracts import (
+from gss_contracts import (
     AccountAdapter,
     CardSource,
     CheckoutAdapter,
@@ -30,7 +30,7 @@ from dcp_contracts import (
     assert_transition,
     is_deliverable,
 )
-from dcp_contracts.errors import DomainError, ErrorCode
+from gss_contracts.errors import DomainError, ErrorCode
 
 #: 支付结果 → 订单状态映射（ADR 0002：不允许把「请求成功」当成「订阅生效」）。
 PAYMENT_STATUS_TO_ORDER: Dict[PaymentStatus, OrderStatus] = {

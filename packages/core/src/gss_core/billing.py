@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from typing import Dict, List, Mapping, TypedDict
 
-from dcp_core.countries import normalize_country
+from gss_core.countries import normalize_country
 
 
 class BillingAddress(TypedDict):

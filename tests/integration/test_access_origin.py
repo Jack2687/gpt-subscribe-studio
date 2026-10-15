@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from dcp_api.test_access import TestAccessMiddleware
+from gss_api.test_access import TestAccessMiddleware
 
 
 def _client(tmp_path: Path, origin: str = "") -> TestClient:

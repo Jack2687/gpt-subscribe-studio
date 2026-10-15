@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dcp_core.proxies import describe_gateway, gateway_from_input, parse_proxy_input, rewrite_proxy_exit
+from gss_core.proxies import describe_gateway, gateway_from_input, parse_proxy_input, rewrite_proxy_exit
 
 
 def test_parse_url_with_region_and_sid() -> None:
