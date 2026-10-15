@@ -332,7 +332,7 @@ def run(poll_interval: float = 5.0, once: bool = False, use_fake: bool = False) 
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="直卡协议编排 worker")
+    parser = argparse.ArgumentParser(description="gpt-subscribe-studio 编排 worker")
     parser.add_argument("--once", action="store_true", help="只做一次自检后退出")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="轮询间隔（秒）")
     parser.add_argument("--fake", action="store_true", help="使用 Fake adapter（测试模式）")

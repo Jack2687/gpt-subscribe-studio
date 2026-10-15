@@ -33,7 +33,7 @@ def create_app() -> FastAPI:
     settings = load_settings()
 
     app = FastAPI(
-        title="DirectCard Protocol API",
+        title="gpt-subscribe-studio API",
         version=__version__,
         description="独立的 ChatGPT 订阅开通工具：粘贴 session，浏览器填卡。",
     )

@@ -1,11 +1,11 @@
-name: ${DCP_COMPOSE_PROJECT:-directcard-protocol}
+name: ${DCP_COMPOSE_PROJECT:-gpt-subscribe-studio}
 
 services:
   api:
     build:
       context: ../..
       dockerfile: deploy/server/Dockerfile
-    image: directcard-protocol:${DCP_RELEASE:?set DCP_RELEASE}
+    image: gpt-subscribe-studio:${DCP_RELEASE:?set DCP_RELEASE}
     ports:
       - "127.0.0.1:18120:8080"
     environment:

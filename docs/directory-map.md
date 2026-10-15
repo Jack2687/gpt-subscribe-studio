@@ -3,7 +3,7 @@
 **日期**: 2026-10-09
 
 ```text
-direct-card-protocol/
+gpt-subscribe-studio/
 ├── .specify/                    # spec-kit SDD 骨架（constitution / templates / scripts）
 ├── .claude/skills/speckit-*     # spec-kit 生成的 agent skills
 ├── apps/

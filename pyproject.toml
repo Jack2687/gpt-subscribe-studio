@@ -1,5 +1,5 @@
 [project]
-name = "direct-card-protocol"
+name = "gpt-subscribe-studio"
 version = "0.1.0"
 description = "自托管的 ChatGPT 订阅代开编排与交付平台"
 readme = "README.md"

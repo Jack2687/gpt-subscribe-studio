@@ -1,4 +1,4 @@
-# 直卡协议 —— 容器化自托管编排（ADR 0003）
+# gpt-subscribe-studio —— 容器化自托管编排（ADR 0003）
 #
 #   cd deploy && cp .env.example .env && docker compose up -d --build
 #
@@ -9,7 +9,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
-    image: direct-card-protocol/api:0.1.0
+    image: gpt-subscribe-studio/api:0.1.0
     env_file: [.env]
     ports:
       - "127.0.0.1:8080:8080"
@@ -22,7 +22,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
-    image: direct-card-protocol/api:0.1.0
+    image: gpt-subscribe-studio/api:0.1.0
     command: ["python", "-m", "dcp_orchestrator.worker"]
     env_file: [.env]
     depends_on:

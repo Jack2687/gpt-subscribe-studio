@@ -1,4 +1,4 @@
-# 直卡协议 · DirectCard Protocol
+# gpt-subscribe-studio
 
 > 自托管的 **ChatGPT 订阅代开** 编排与交付平台。
 > 把「账号 → 结账链接 → 卡支付 → 订阅校验 → 交付」串成一条可观测、可断点续跑、

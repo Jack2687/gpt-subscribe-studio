@@ -13,7 +13,7 @@
 ```bash
 # 克隆项目
 git clone <repo-url>
-cd 直卡协议
+cd gpt-subscribe-studio
 
 # 使用 uv 安装所有依赖
 uv sync --python 3.12
@@ -286,5 +286,5 @@ A: 50 个测试通过意味着：
 |---|---|
 | `DCP_RELEASE` | 镜像标签（必填），例如构建时间戳 |
 | `DCP_PRIVATE_DIR` | 存放 `container-auth.json`（访问密码）和 `proxy-config/` 的目录（必填，不要放进仓库） |
-| `DCP_COMPOSE_PROJECT` | compose 项目名，默认 `directcard-protocol` |
+| `DCP_COMPOSE_PROJECT` | compose 项目名，默认 `gpt-subscribe-studio` |
 | `DCP_PUBLIC_ORIGIN` | 选填，例如 `https://你的域名`。不填时按「请求 Origin 与 Host 同源」校验，部署到任何域名都能用 |

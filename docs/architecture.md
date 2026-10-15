@@ -1,6 +1,6 @@
 # 架构总览（Architecture Overview）
 
-**项目**: 直卡协议 / DirectCard Protocol
+**项目**: gpt-subscribe-studio
 **定位**: 自托管的「ChatGPT 订阅代开」编排与交付平台
 **日期**: 2026-10-09
 

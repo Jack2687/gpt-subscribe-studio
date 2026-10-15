@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "dcp-api"
 version = "0.1.0"
-description = "订单 API 服务（直卡协议）"
+description = "订单 API 服务（gpt-subscribe-studio）"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.109.0",
