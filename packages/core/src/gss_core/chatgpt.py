@@ -182,7 +182,7 @@ def hosted_checkout_url(url: str = "", session_id: str = "") -> str:
     return value
 
 
-# HAR（绑卡chatgpt.com.har）里 payments/checkout 与 checkout/confirm 请求都带这组前端标识。
+# 浏览器抓包里 payments/checkout 与 checkout/confirm 请求都带这组前端标识。
 _CODEX_WEB_HEADERS = {
     "originator": "Codex Browser",
     "x-openai-web-frontend": "codex_webview",
