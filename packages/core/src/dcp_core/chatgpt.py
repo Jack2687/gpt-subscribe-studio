@@ -74,6 +74,31 @@ _CS_ID = re.compile(r"cs_(?:live|test)_[A-Za-z0-9]+")
 _OAICS_ID = re.compile(r"oaics_[A-Za-z0-9]+")
 
 
+def _stripe_device_id() -> str:
+    """文档 8.2：guid/muid/sid = UUID + 6 位 hex，共 42 字符。"""
+    return str(uuid.uuid4()) + uuid.uuid4().hex[:6]
+
+
+def _elements_session_client_fields(
+    *,
+    stripe_js_id: str,
+    elements_session_id: str = "",
+    locale: str = "en",
+) -> Dict[str, str]:
+    fields = {
+        "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+        "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+        "elements_session_client[elements_init_source]": "custom_checkout",
+        "elements_session_client[referrer_host]": "chatgpt.com",
+        "elements_session_client[stripe_js_id]": stripe_js_id,
+        "elements_session_client[locale]": locale or "en",
+        "elements_session_client[is_aggregation_expected]": "false",
+    }
+    if elements_session_id:
+        fields["elements_session_client[session_id]"] = elements_session_id
+    return fields
+
+
 def clamp_team_seats(value: Any) -> int:
     try:
         seats = int(value)
@@ -207,6 +232,7 @@ def _checkout_body(
         "checkout_appearance": "light",
         "cancel_url": f"{APP_BASE}/?cta_tab=personal",
         "purchase_attempt_id": str(uuid.uuid4()),
+        "checkout_ui_mode": "custom",
     }
     if promo:
         body["promo_campaign"] = {
@@ -291,6 +317,8 @@ class ChatGPTClient:
     sentinel_so: str = ""
     _http: Any = field(default=None, repr=False)
     _stripe_http: Any = field(default=None, repr=False)
+    _stripe_js_id: str = field(default="", repr=False)
+    _elements_session_id: str = field(default="", repr=False)
 
     @classmethod
     def from_raw_session(cls, raw: str, proxy: Optional[str] = None) -> "ChatGPTClient":
@@ -810,8 +838,9 @@ class ChatGPTClient:
         processor: str,
         currency: str,
         strict: bool,
-    ) -> None:
+    ) -> Optional[int]:
         self.mint_sentinel(flow="checkout_session_approval", page_url=page_url)
+        taxed: Dict[str, Any] = {}
         try:
             response = self.http.post(
                 f"{APP_BASE}/backend-api/payments/checkout/taxes",
@@ -829,14 +858,13 @@ class ChatGPTClient:
             logger.info(
                 "checkout_taxes status=%s amount_total=%s billing_country=%s",
                 getattr(response, "status_code", 0),
-                session.get("amount_total"),
+                session.get("amount_total") or (taxed.get("snapshot") or {}).get("amount_total"),
                 (billing or {}).get("country", ""),
             )
         except Exception as exc:
             if strict:
                 raise
             logger.warning("checkout_taxes 失败（继续确认）: %s", redact_sensitive(str(exc))[:200])
-            return
         try:
             self.http.post(
                 f"{APP_BASE}/backend-api/payments/checkout/update_tax_id",
@@ -848,6 +876,7 @@ class ChatGPTClient:
             )
         except Exception:
             pass
+        return expected_amount_minor(taxed)
 
     def confirm_checkout(
         self,
@@ -863,8 +892,8 @@ class ChatGPTClient:
         session_id = public_checkout_id(checkout_session_id)
         page_url = checkout_url or f"{APP_BASE}/checkout/{session_id}"
         processor = processor_entity or _processor_from_checkout_url(checkout_url)
-        # 浏览器在确认前总会按「实际账单地址」重算税费，否则 Stripe 报 checkout_upcoming_invoice_mismatch。
-        self._sync_billing_tax(
+        # 文档 2.3：taxes snapshot.amount_total 才是 Confirm 的 expected_amount。
+        tax_minor = self._sync_billing_tax(
             session_id=session_id,
             page_url=page_url,
             billing=billing,
@@ -878,11 +907,15 @@ class ChatGPTClient:
                 publishable_key=publishable_key,
                 confirmation_token=confirm_token,
                 return_url=stripe_verify_url(session_id, processor=processor),
+                expected_amount=tax_minor,
+                billing=billing,
+                currency=currency,
             )
         response = self.http.post(
             f"{APP_BASE}/backend-api/payments/checkout/confirm",
             json={
                 "checkout_session_id": session_id,
+                "confirmation_token": confirm_token,
                 "confirm_token": confirm_token,
                 "selected_payment_method_type": "card",
             },
@@ -907,8 +940,11 @@ class ChatGPTClient:
         publishable_key: str,
         confirmation_token: str,
         return_url: str = "",
+        expected_amount: Optional[int] = None,
+        billing: Optional[Dict[str, str]] = None,
+        currency: str = "",
     ) -> Dict[str, Any]:
-        """官方晚间 Plus/Go/Pro SPA：cs_live 走 Stripe payment_pages，不能 POST ChatGPT confirm。"""
+        """cs_live：文档 4.2 Hosted/Custom Checkout（init → tax_region → elements → confirm）。"""
         session_id = public_checkout_id(checkout_session_id)
         pk = str(publishable_key or "").strip()
         token = str(confirmation_token or "").strip()
@@ -918,47 +954,90 @@ class ChatGPTClient:
             raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少 Stripe 公钥")
         if not token.startswith("ctoken_"):
             raise DomainError(ErrorCode.PAYMENT_DECLINED, "缺少 confirmation token")
-        init_payload = self._post_stripe_form(
-            f"{STRIPE_BASE}/v1/payment_pages/{session_id}/init",
-            {
-                "browser_locale": self.language or "en-US",
-                "browser_timezone": self.timezone or "America/New_York",
-                "elements_session_client[elements_init_source]": "custom_checkout",
-                "elements_session_client[referrer_host]": "chatgpt.com",
-                "elements_session_client[stripe_js_id]": str(uuid.uuid4()),
-                "elements_session_client[locale]": str((self.language or "en-US").split("-")[0] or "en"),
-                "elements_session_client[is_aggregation_expected]": "false",
-                "key": pk,
-                "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
-            },
-        )
-        confirm_body: Dict[str, str] = {
+        locale = str((self.language or "en-US").split("-")[0] or "en")
+        stripe_js_id = str(uuid.uuid4())
+        started = time.monotonic()
+        init_body: Dict[str, str] = {
+            "browser_locale": self.language or "en-US",
+            "browser_timezone": self.timezone or "America/New_York",
             "key": pk,
             "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
-            "confirmation_token": token,
-            "expected_payment_method_type": "card",
-            "return_url": return_url or stripe_verify_url(session_id),
-            "consent[terms_of_service]": "accepted",
+            **_elements_session_client_fields(stripe_js_id=stripe_js_id, locale=locale),
         }
-        checksum = str(init_payload.get("init_checksum") or "")
-        if checksum:
-            confirm_body["init_checksum"] = checksum
-        minor = expected_amount_minor(init_payload)
+        init_payload = self._post_stripe_form(
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}/init",
+            init_body,
+        )
+        tax_payload = self._update_stripe_tax_region(
+            session_id=session_id,
+            publishable_key=pk,
+            billing=billing,
+            stripe_js_id=stripe_js_id,
+            locale=locale,
+        )
+        minor = expected_amount
+        if minor is None:
+            minor = expected_amount_minor(tax_payload) or expected_amount_minor(init_payload)
         if minor is None:
             raise DomainError(
                 ErrorCode.PAYMENT_UNKNOWN_STATE,
                 "Stripe 确认缺少应付金额（expected_amount）。请重新创建结账后再确认。",
             )
-        confirm_body["expected_amount"] = str(minor)
+        elements = self._fetch_elements_session(
+            session_id=session_id,
+            publishable_key=pk,
+            amount=minor,
+            currency=currency or str(init_payload.get("currency") or ""),
+            stripe_js_id=stripe_js_id,
+        )
+        elements_session_id = str(
+            elements.get("session_id") or init_payload.get("elements_session_id") or ""
+        )
+        elements_config_id = str(elements.get("config_id") or init_payload.get("config_id") or "")
+        self._stripe_js_id = stripe_js_id
+        self._elements_session_id = elements_session_id
+        confirm_body: Dict[str, str] = {
+            "key": pk,
+            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            "confirmation_token": token,
+            "expected_payment_method_type": "card",
+            "expected_amount": str(minor),
+            "return_url": return_url or stripe_verify_url(session_id),
+            "consent[terms_of_service]": "accepted",
+            "guid": _stripe_device_id(),
+            "muid": _stripe_device_id(),
+            "sid": _stripe_device_id(),
+            "time_on_page": str(max(8000, int((time.monotonic() - started) * 1000))),
+            "client_attribution_metadata[client_session_id]": stripe_js_id,
+            "client_attribution_metadata[checkout_session_id]": session_id,
+            "client_attribution_metadata[merchant_integration_source]": "checkout",
+            "client_attribution_metadata[merchant_integration_version]": "custom_checkout",
+            "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+            **_elements_session_client_fields(
+                stripe_js_id=stripe_js_id,
+                elements_session_id=elements_session_id,
+                locale=locale,
+            ),
+        }
+        if elements_config_id:
+            confirm_body["client_attribution_metadata[elements_session_config_id]"] = elements_config_id
+            confirm_body["client_attribution_metadata[checkout_config_id]"] = elements_config_id
+        if elements_session_id:
+            confirm_body["client_attribution_metadata[elements_session_id]"] = elements_session_id
+        for key in ("init_checksum", "js_checksum", "rv_timestamp"):
+            value = str(init_payload.get(key) or tax_payload.get(key) or "")
+            if value:
+                confirm_body[key] = value
         payload = self._post_stripe_form(
             f"{STRIPE_BASE}/v1/payment_pages/{session_id}/confirm",
             confirm_body,
         )
         logger.info(
-            "stripe_payment_page_confirm status=%s submission=%s has_pi=%s",
+            "stripe_payment_page_confirm status=%s submission=%s has_pi=%s expected_amount=%s",
             payload.get("status") or "",
             submission_state(payload),
             bool(_intent_object(payload)),
+            minor,
         )
         return payload
 
@@ -973,8 +1052,15 @@ class ChatGPTClient:
         attempts: int = 12,
         interval: float = 0.8,
     ) -> Dict[str, Any]:
-        """cs_live confirm 之后：ChatGPT approve（requires_approval）再轮询 payment_pages。"""
+        """cs_live confirm 之后：先 fall-through 轮询，仍 requires_approval 再 Sentinel approve。"""
         page = dict(confirmed or {})
+        if not payment_page_settled(page):
+            page = self.poll_payment_page(
+                checkout_session_id=checkout_session_id,
+                publishable_key=publishable_key,
+                attempts=min(3, attempts),
+                interval=min(0.6, interval) if interval else 0,
+            ) or page
         if checkout_requires_approval(page):
             approved = self.approve_checkout(
                 checkout_session_id=checkout_session_id,
@@ -993,7 +1079,7 @@ class ChatGPTClient:
                 if extra:
                     page["message"] = extra
                 return page
-        if payment_page_settled(page):
+        if payment_page_settled(page) and not checkout_requires_approval(page):
             return page
         polled = self.poll_payment_page(
             checkout_session_id=checkout_session_id,
@@ -1013,31 +1099,17 @@ class ChatGPTClient:
     ) -> Dict[str, Any]:
         session_id = public_checkout_id(checkout_session_id)
         pk = str(publishable_key or "").strip()
-        getter = getattr(self.stripe_http, "get", None)
-        if not session_id.startswith("cs_") or not callable(getter):
+        if not session_id.startswith("cs_") or not pk:
             return {}
-        params = {
-            "key": pk,
-            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
-            "elements_session_client[elements_init_source]": "custom_checkout",
-            "elements_session_client[referrer_host]": "chatgpt.com",
-            "elements_session_client[locale]": str((self.language or "en-US").split("-")[0] or "en"),
-            "elements_session_client[is_aggregation_expected]": "false",
-        }
         last: Dict[str, Any] = {}
         for _ in range(max(1, attempts)):
-            response = getter(
-                f"{STRIPE_BASE}/v1/payment_pages/{session_id}",
-                params=params,
-                timeout=self.timeout,
-            )
-            status = int(getattr(response, "status_code", 0) or 0)
-            payload = _json(response)
-            if status < 400 and payload:
+            payload = self._poll_payment_page_once(session_id=session_id, publishable_key=pk)
+            if payload:
                 last = payload
                 logger.info(
-                    "stripe_payment_page_poll status=%s submission=%s has_pi=%s",
+                    "stripe_payment_page_poll status=%s object=%s submission=%s has_pi=%s",
                     payload.get("status") or "",
+                    payload.get("payment_object_status") or "",
                     submission_state(payload),
                     bool(_intent_object(payload)),
                 )
@@ -1056,6 +1128,112 @@ class ChatGPTClient:
             if interval > 0:
                 time.sleep(interval)
         return last
+
+    def _poll_payment_page_once(self, *, session_id: str, publishable_key: str) -> Dict[str, Any]:
+        locale = str((self.language or "en-US").split("-")[0] or "en")
+        body = {
+            "key": publishable_key,
+            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            **_elements_session_client_fields(
+                stripe_js_id=self._stripe_js_id or str(uuid.uuid4()),
+                elements_session_id=self._elements_session_id,
+                locale=locale,
+            ),
+        }
+        posted = self._post_stripe_form_soft(
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}/poll",
+            body,
+        )
+        if posted:
+            return posted
+        getter = getattr(self.stripe_http, "get", None)
+        if not callable(getter):
+            return {}
+        params = dict(body)
+        for url in (
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}/poll",
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}",
+        ):
+            try:
+                response = getter(url, params=params, timeout=self.timeout)
+            except Exception:
+                continue
+            if int(getattr(response, "status_code", 0) or 0) < 400:
+                payload = _json(response)
+                if payload:
+                    return payload
+        return {}
+
+    def _update_stripe_tax_region(
+        self,
+        *,
+        session_id: str,
+        publishable_key: str,
+        billing: Optional[Dict[str, str]],
+        stripe_js_id: str,
+        locale: str,
+    ) -> Dict[str, Any]:
+        if not billing:
+            return {}
+        body: Dict[str, str] = {
+            "key": publishable_key,
+            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            **_elements_session_client_fields(stripe_js_id=stripe_js_id, locale=locale),
+        }
+        for field, key in (
+            ("country", "country"),
+            ("line1", "line1"),
+            ("city", "city"),
+            ("postal_code", "postal_code"),
+            ("state", "state"),
+        ):
+            value = str((billing or {}).get(key) or "").strip()
+            if value:
+                body[f"tax_region[{field}]"] = value
+        return self._post_stripe_form_soft(
+            f"{STRIPE_BASE}/v1/payment_pages/{session_id}",
+            body,
+        )
+
+    def _fetch_elements_session(
+        self,
+        *,
+        session_id: str,
+        publishable_key: str,
+        amount: int,
+        currency: str,
+        stripe_js_id: str,
+    ) -> Dict[str, Any]:
+        getter = getattr(self.stripe_http, "get", None)
+        if not callable(getter):
+            return {}
+        params = {
+            "type": "deferred_intent",
+            "deferred_intent[mode]": "subscription",
+            "deferred_intent[amount]": str(amount),
+            "deferred_intent[currency]": str(currency or "usd").lower(),
+            "deferred_intent[setup_future_usage]": "off_session",
+            "deferred_intent[payment_method_types][0]": "card",
+            "deferred_intent[payment_method_types][1]": "link",
+            "checkout_session_id": session_id,
+            "stripe_js_id": stripe_js_id,
+            "key": publishable_key,
+            "_stripe_version": STRIPE_CHECKOUT_API_VERSION,
+            "elements_init_source": "custom_checkout",
+            "referrer_host": "chatgpt.com",
+            "locale": str((self.language or "en-US").split("-")[0] or "en"),
+        }
+        try:
+            response = getter(
+                f"{STRIPE_BASE}/v1/elements/sessions",
+                params=params,
+                timeout=self.timeout,
+            )
+        except Exception:
+            return {}
+        if int(getattr(response, "status_code", 0) or 0) >= 400:
+            return {}
+        return _json(response)
 
     def approve_checkout(
         self,
@@ -1108,6 +1286,41 @@ class ChatGPTClient:
             _raise_stripe(payload, status)
         return payload
 
+    def _post_stripe_form_soft(self, url: str, body: Dict[str, str]) -> Dict[str, Any]:
+        try:
+            return self._post_stripe_form(url, body)
+        except DomainError:
+            return {}
+
+    def retrieve_stripe_intent(
+        self,
+        *,
+        intent_id: str,
+        client_secret: str = "",
+        publishable_key: str,
+    ) -> Dict[str, Any]:
+        getter = getattr(self.stripe_http, "get", None)
+        if not callable(getter) or not intent_id:
+            return {}
+        kind = "payment_intents" if intent_id.startswith("pi_") else "setup_intents"
+        params = {
+            "key": publishable_key,
+            "_stripe_version": STRIPE_API_VERSION,
+        }
+        if client_secret:
+            params["client_secret"] = client_secret
+        try:
+            response = getter(
+                f"{STRIPE_BASE}/v1/{kind}/{intent_id}",
+                params=params,
+                timeout=self.timeout,
+            )
+        except Exception:
+            return {}
+        if int(getattr(response, "status_code", 0) or 0) >= 400:
+            return {}
+        return _json(response)
+
     def confirm_stripe_intent(
         self,
         *,
@@ -1124,6 +1337,7 @@ class ChatGPTClient:
             "key": publishable_key,
             "client_secret": client_secret,
             "_stripe_version": STRIPE_API_VERSION,
+            "client_attribution_metadata[merchant_integration_source]": "l1",
         }
         if confirmation_token:
             body["confirmation_token"] = confirmation_token
@@ -1351,10 +1565,10 @@ def nested_intent_status(payload: Dict[str, Any]) -> str:
 
 
 def payment_page_settled(payload: Dict[str, Any]) -> bool:
-    status = str(payload.get("status") or "").strip().lower()
+    status = str(payload.get("status") or payload.get("payment_object_status") or "").strip().lower()
     state = submission_state(payload)
     pi_status = nested_intent_status(payload)
-    if status in {"complete", "completed", "expired"}:
+    if status in {"complete", "completed", "expired", "succeeded", "requires_action"}:
         return True
     if state in {"succeeded", "complete", "completed", "failed", "declined", "canceled", "cancelled"}:
         return True
@@ -1399,6 +1613,11 @@ def expected_amount_minor(payload: Any) -> Optional[int]:
     """
     if not isinstance(payload, dict):
         return None
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    if snapshot:
+        found = _as_minor_int(snapshot.get("amount_total") or snapshot.get("due"))
+        if found is not None:
+            return found
     wrappers = (
         payload,
         payload.get("session") if isinstance(payload.get("session"), dict) else None,
@@ -1487,6 +1706,35 @@ def _stripe_unknown_param(payload: Dict[str, Any]) -> str:
     return match.group(1) if match else ""
 
 
+_DECLINE_ADVICE = {
+    "do_not_honor": "发卡行未说明原因。请联系银行确认该卡已开通境外/网上/订阅扣款、额度够用，并核对账单地址与卡登记地址一致；先别连续重试，可换一张卡。",
+    "generic_decline": "发卡行未说明原因。请联系银行确认该卡可用于境外网上扣款，再重试或换卡。",
+    "insufficient_funds": "余额或额度不足，请充值后重试或换卡。",
+    "card_velocity_exceeded": "短时间内尝试次数或金额超限，请稍后再试，或联系银行放宽限额。",
+    "lost_card": "发卡行标记该卡已挂失，请换卡。",
+    "stolen_card": "发卡行标记该卡不可用，请换卡。",
+    "expired_card": "卡已过期，请换卡。",
+    "incorrect_cvc": "安全码（CVC）不正确，请重新输入。",
+    "incorrect_number": "卡号不正确，请重新输入。",
+    "invalid_cvc": "安全码（CVC）不正确，请重新输入。",
+    "invalid_expiry_month": "有效期月份不正确，请重新输入。",
+    "invalid_expiry_year": "有效期年份不正确，请重新输入。",
+    "authentication_required": "发卡行要求 3DS 验证，请在银行 App 或短信里完成验证后重试。",
+    "card_not_supported": "这张卡不支持该类扣款，请换卡。",
+    "currency_not_supported": "这张卡不支持当前币种，请联系银行开通或换卡。",
+    "transaction_not_allowed": "发卡行不允许这类交易，请联系银行或换卡。",
+    "pickup_card": "发卡行要求不再使用该卡，请换卡。",
+    "fraudulent": "发卡行判定为风险交易，请联系银行确认后再试。",
+}
+
+
+def decline_message(detail: str) -> str:
+    """发卡行拒绝的统一文案：保留原始拒绝码，已知码附上处理建议。"""
+    code = str(detail or "").strip()
+    advice = _DECLINE_ADVICE.get(code.lower())
+    return f"发卡行拒绝: {code}。{advice}" if advice else f"发卡行拒绝: {code}"
+
+
 def _raise_stripe(payload: Dict[str, Any], status: int) -> None:
     error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
     code = str(error.get("code") or "")
@@ -1509,7 +1757,7 @@ def _raise_stripe(payload: Dict[str, Any], status: int) -> None:
         )
     if status == 402 or code == "card_declined" or decline:
         detail = decline or code or message
-        raise DomainError(ErrorCode.PAYMENT_DECLINED, f"发卡行拒绝: {redact_sensitive(detail)}")
+        raise DomainError(ErrorCode.PAYMENT_DECLINED, decline_message(redact_sensitive(detail)))
     raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, redact_sensitive(message))
 
 

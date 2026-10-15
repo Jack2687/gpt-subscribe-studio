@@ -317,9 +317,11 @@ class _StripeHttp:
         self.headers: dict = {}
         self.posts: list = []
         self.gets: list = []
+        self.poll_count = 0
         self.poll_payload = poll_payload or {
             "id": "cs_live_1",
             "status": "complete",
+            "payment_object_status": "succeeded",
             "submission_attempt": {"state": "succeeded"},
             "payment_intent": {
                 "id": "pi_1",
@@ -327,16 +329,36 @@ class _StripeHttp:
                 "status": "succeeded",
             },
         }
+        self.open_payload = {
+            "id": "cs_live_1",
+            "status": "open",
+            "submission_attempt": {"state": "requires_approval"},
+        }
+
+    def _next_poll(self) -> dict:
+        self.poll_count += 1
+        if self.poll_count <= 2:
+            return self.open_payload
+        return self.poll_payload
 
     def get(self, url: str, **kwargs):
         self.gets.append({"url": url, "params": kwargs.get("params")})
+        if "elements/sessions" in url:
+            return _FakeResponse(payload={"session_id": "elements_session_test", "config_id": "cfg_test"})
+        if url.endswith("/poll") or "/payment_pages/" in url:
+            return _FakeResponse(payload=self._next_poll())
         return _FakeResponse(payload=self.poll_payload)
 
     def post(self, url: str, **kwargs):
         self.posts.append({"url": url, "data": kwargs.get("data")})
         if url.endswith("/init"):
             return _FakeResponse(
-                payload={"init_checksum": "chk_1", "total_summary": {"due": 2000, "subtotal": 1800}}
+                payload={
+                    "init_checksum": "chk_1",
+                    "js_checksum": "js_1",
+                    "rv_timestamp": "1",
+                    "total_summary": {"due": 2000, "subtotal": 1800},
+                }
             )
         if url.endswith("/confirm"):
             return _FakeResponse(
@@ -346,6 +368,8 @@ class _StripeHttp:
                     "submission_attempt": {"state": "requires_approval"},
                 }
             )
+        if url.endswith("/poll"):
+            return _FakeResponse(payload=self._next_poll())
         return _FakeResponse(payload={})
 
 
@@ -617,6 +641,8 @@ def test_confirm_checkout_oaics_posts_chatgpt_confirm(monkeypatch: pytest.Monkey
     assert all("/payment_pages/" not in url for url in urls)
     confirm = next(item for item in client._http.posts if item["url"].endswith("/confirm"))
     assert confirm["json"]["checkout_session_id"] == "oaics_abc"
+    assert confirm["json"]["confirmation_token"] == "ctoken_1"
+    assert confirm["json"]["confirm_token"] == "ctoken_1"
 
 
 def test_confirm_checkout_cs_live_uses_payment_pages(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -638,6 +664,8 @@ def test_confirm_checkout_cs_live_uses_payment_pages(monkeypatch: pytest.MonkeyP
     confirm = next(item for item in client._stripe_http.posts if item["url"].endswith("/confirm"))
     fields = parse_qs(str(confirm["data"] or ""))
     assert fields["expected_amount"] == ["2000"]
+    assert fields["elements_session_client[elements_init_source]"] == ["custom_checkout"]
+    assert fields["init_checksum"] == ["chk_1"]
     assert checkout_requires_approval(payload) is True
     assert checkout_requires_approval({"status": "open"}) is False
 
@@ -646,6 +674,7 @@ def test_expected_amount_minor_reads_stripe_init_shapes() -> None:
     assert expected_amount_minor({"total_summary": {"due": 22000}}) == 22000
     assert expected_amount_minor({"invoice": {"amount_due": 16800}}) == 16800
     assert expected_amount_minor({"session": {"amount_total": 3000}}) == 3000
+    assert expected_amount_minor({"snapshot": {"amount_total": 11000, "currency": "usd"}}) == 11000
     assert expected_amount_minor({"init_checksum": "chk"}) is None
 
 
@@ -660,7 +689,9 @@ def test_confirm_checkout_cs_live_requires_expected_amount(monkeypatch: pytest.M
             self.posts.append({"url": url, "data": kwargs.get("data")})
             if url.endswith("/init"):
                 return _FakeResponse(payload={"init_checksum": "chk_1"})
-            raise AssertionError("confirm must not run without expected_amount")
+            if url.endswith("/confirm"):
+                raise AssertionError("confirm must not run without expected_amount")
+            return _FakeResponse(payload={})
 
     client = ChatGPTClient.from_raw_session(_jwt("acct-sentinel"))
     client._http = _FakeHttp("")
@@ -731,7 +762,7 @@ def test_payment_checkout_body_matches_har_and_headers_carry_codex_identity() ->
     from dcp_core.chatgpt import ChatGPTClient, _checkout_body
 
     body = _checkout_body(plan="pro_lite", country="US", currency="USD")
-    assert "checkout_ui_mode" not in body
+    assert body["checkout_ui_mode"] == "custom"
     assert body["checkout_source"] == "chatgpt_web_merged"
 
     client = ChatGPTClient(access_token="t")
@@ -773,7 +804,9 @@ def test_stripe_custom_confirm_syncs_billing_tax_first(monkeypatch) -> None:
     client._http = _Http()
     monkeypatch.setattr(client, "mint_sentinel", lambda **kw: None)
     monkeypatch.setattr(
-        client, "confirm_stripe_custom_checkout", lambda **kw: calls.append(("stripe_confirm", {})) or {}
+        client,
+        "confirm_stripe_custom_checkout",
+        lambda **kw: calls.append(("stripe_confirm", kw)) or {},
     )
     billing = {"name": "Jane Roe", "line1": "1 Main St", "city": "Austin", "state": "TX",
                "postal_code": "73301", "country": "US"}
@@ -789,3 +822,13 @@ def test_stripe_custom_confirm_syncs_billing_tax_first(monkeypatch) -> None:
     assert [name for name, _ in calls] == ["taxes", "update_tax_id", "stripe_confirm"]
     assert calls[0][1]["billing_address"]["postal_code"] == "73301"
     assert calls[0][1]["billing_country"] == "US"
+    assert calls[2][1]["expected_amount"] == 15273
+
+
+def test_decline_message_keeps_code_and_adds_advice() -> None:
+    from dcp_core.chatgpt import decline_message
+
+    known = decline_message("do_not_honor")
+    assert known.startswith("发卡行拒绝: do_not_honor。")
+    assert "联系银行" in known
+    assert decline_message("some_new_code") == "发卡行拒绝: some_new_code"

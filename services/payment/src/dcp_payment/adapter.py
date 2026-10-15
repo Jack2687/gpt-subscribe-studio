@@ -15,6 +15,7 @@ from dcp_core.chatgpt import (
     checkout_confirm_blocked,
     checkout_confirm_blocked_advice,
     checkout_confirm_message,
+    decline_message,
     nested_intent_status,
     payment_intent_from_confirm,
     public_checkout_id,
@@ -149,6 +150,17 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
         if pi_status in {"requires_payment_method", "canceled", "cancelled"} or nested.get("last_payment_error"):
             return _result_from_intent(nested or {"status": pi_status or "requires_payment_method"}, intent_id)
         if intent_secret.startswith("pi_") or kind == "payment_intent" or intent_id.startswith("pi_"):
+            if pi_status == "requires_action" and intent_secret:
+                live = client.retrieve_stripe_intent(
+                    intent_id=intent_id,
+                    client_secret=intent_secret,
+                    publishable_key=pk,
+                )
+                live_status = str(live.get("status") or "")
+                if live_status == "succeeded":
+                    return _result_from_intent(live, intent_id)
+                if live:
+                    return _result_from_intent(live, intent_id)
             if pi_status in {"succeeded", "processing", "requires_action"}:
                 return _result_from_intent(
                     nested if nested else {"status": pi_status},
@@ -225,7 +237,7 @@ def _result_from_intent(payload: Dict[str, Any], intent_id: str) -> PaymentResul
         return PaymentResult(
             status=PaymentStatus.DECLINED,
             provider_ref=intent_id,
-            message=f"发卡行拒绝: {detail}" if error else f"支付未完成: {status}",
+            message=decline_message(detail) if error else f"支付未完成: {status}",
         )
     return PaymentResult(
         status=PaymentStatus.ERROR,

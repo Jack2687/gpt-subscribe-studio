@@ -31,12 +31,21 @@ runtime.json
 payment.json
 standalone_config.json
 card_pool.local.json
+private/
+*.har
+*.pem
+*.key
+*.sqlite
+*.sqlite3
+*.db
+*.tar.gz
 
 # ---- 上游引用（以 submodule 形式，不当普通目录提交）----
 vendor/upstream/*/
 !vendor/upstream/README.md
 
 # ---- 本机工具 ----
+.claude/settings.local.json
 reasonix.toml
 .reasonix/
 .uv-tools/
