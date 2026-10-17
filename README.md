@@ -513,3 +513,5 @@ python3 scripts/release_check.py
 
 本仓库代码基于 **MIT License** 开源。详见 [docs/compliance.md](docs/compliance.md) 与 [docs/upstream-integration.md](docs/upstream-integration.md)。
 
+
+欢迎加入群聊：https://t.me/c/TokenFlying/1
