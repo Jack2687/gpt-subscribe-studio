@@ -1,8 +1,18 @@
+import base64
 import json
 
 import pytest
 
 from gss_core.session_token import parse_session, parse_session_bundle
+
+
+def _b64(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+
+# 运行时拼出的占位 token，仓库里不出现完整的 JWT 字面量。
+_JWE_HEADER = _b64('{"alg":"dir","enc":"A256GCM"}')
+_JWS_HEADER = _b64('{"alg":"RS256","typ":"JWT"}')
 
 
 def test_plain_token() -> None:
@@ -46,3 +56,28 @@ def test_nested_session_object() -> None:
 def test_cookie_only_paste_is_rejected() -> None:
     with pytest.raises(ValueError, match="整段 session"):
         parse_session_bundle("oai-did=did-1; __Secure-next-auth.session-token=sess-1")
+
+
+def test_jwe_session_token_recognized() -> None:
+    """5段 JWE（session token）应该被识别为 session_token 而非 access_token"""
+    jwe_token = f"{_JWE_HEADER}..abc123.def456.ghi789"
+    bundle = parse_session_bundle(jwe_token)
+    assert bundle.access_token == ""
+    assert bundle.session_token == jwe_token
+
+
+def test_jws_access_token_recognized() -> None:
+    """3段 JWS（access token）应该被识别为 access_token"""
+    jws_token = f"{_JWS_HEADER}.payload.signature"
+    bundle = parse_session_bundle(jws_token)
+    assert bundle.access_token == jws_token
+    assert bundle.session_token == ""
+
+
+def test_session_token_with_prefix() -> None:
+    """带前缀的 session token"""
+    jwe_token = f"{_JWE_HEADER}..abc.def.ghi"
+    bundle = parse_session_bundle(f"__Secure-next-auth.session-token={jwe_token}")
+    assert bundle.access_token == ""
+    assert bundle.session_token == jwe_token
+

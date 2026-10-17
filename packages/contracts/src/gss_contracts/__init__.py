@@ -14,6 +14,8 @@ from .adapter import (
     PaymentAdapter,
     PaymentRequest,
     PaymentResult,
+    PromoCampaignInfo,
+    PromoEligibility,
     SubscriptionInfo,
 )
 from .errors import DomainError, ErrorCode
@@ -58,6 +60,8 @@ __all__ = [
     "PaymentResult",
     "PaymentAdapter",
     "SubscriptionInfo",
+    "PromoCampaignInfo",
+    "PromoEligibility",
     "AccountAdapter",
     # errors
     "ErrorCode",

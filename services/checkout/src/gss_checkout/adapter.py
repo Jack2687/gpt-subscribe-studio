@@ -92,12 +92,16 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
     def _create(self, req: CheckoutRequest, proxy: Optional[str]):
         client = ChatGPTClient.from_raw_session(req.session, proxy=proxy)
         client.timeout = float(self.timeout)
+        # 出口已对齐账单国：先用同一出口刷新 session，让 accessToken/cookie 与
+        # 本次 IP 同批次，降低 403 与 unusual activity 概率。软失败不阻断。
+        client.refresh_session()
         try:
             return client.create_checkout(
                 plan=str(req.plan),
                 country=req.billing_country,
                 promo=req.billing_mode is BillingMode.PROMO,
                 promo_code=req.promo_code,
+                promo_campaign_id=req.promo_campaign_id,
                 workspace_name=req.workspace_name,
                 seat_quantity=req.seat_quantity,
                 price_interval=req.price_interval,
@@ -128,7 +132,7 @@ class FakeCheckoutAdapter(CheckoutAdapterBase):
             checkout_session_id=(
                 f"cs_test_fake_{len(self.calls)}" if hosted else f"oaics_fake_{len(self.calls)}"
             ),
-            publishable_key=None,
+            publishable_key="pk_test_fake" if hosted else None,
             billing=dict(address_for(req.billing_country)),
             checkout_kind="hosted" if hosted else "custom",
         )

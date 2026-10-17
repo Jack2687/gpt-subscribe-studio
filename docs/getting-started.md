@@ -125,6 +125,31 @@ curl -X POST http://127.0.0.1:8080/api/orders \
 curl http://127.0.0.1:8080/api/orders/ord_abc123
 ```
 
+### 查询 Plus 活动资格
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/promo/eligibility \
+  -H "Content-Type: application/json" \
+  -d '{"session":"<session-json>"}'
+```
+
+如果返回 `plus_eligible=true`，使用返回的 `campaign_id` 创建订单：
+
+```json
+{
+  "plan": "plus",
+  "billing_country": "US",
+  "session": "<session-json>",
+  "promo_campaign_id": "<campaign_id>",
+  "mode": {
+    "account_source": "customer_session",
+    "card_source": "customer",
+    "billing_mode": "promo",
+    "risk_acknowledged": true
+  }
+}
+```
+
 ### 列出所有订单
 
 ```bash
@@ -273,7 +298,7 @@ A: 50 个测试通过意味着：
 
 - 支持 `http://账号:密码@主机:端口`、`账号:密码@主机:端口`、`主机:端口:账号:密码`、`socks5://…`。
 - 账号里需要带供应商的地区和 SID 参数，例如 `acct-region-US-sid-abc123`。程序能识别 `region` / `country`、`sid` / `session` 这几种常见写法，替换时保留你供应商原来的键名和大小写。
-- 每个订单创建时，程序把地区换成你选的地区、SID 换成新的随机值，同一订单内保持不变；代理出口地区必须和 session 导出国家一致。
+- 每个订单创建时，程序把地区换成你选的地区、SID 换成新的随机值，同一订单内保持不变；出口地区自动对齐订单所选账单国，无需与 session 导出国家一致。
 - 账号里没有地区或 SID 参数时，程序会在末尾追加 `-region-XX`、`-sid-随机值`，请确认你的供应商支持这个写法。
 - 代理保存在服务端的配置目录（`GSS_CONFIG_DIR`，容器内为 `/config`），页面和接口都不会回显账号密码。
 - 「测试连接」只返回出口 IP 和耗时，是否属于目标地区请自行确认。

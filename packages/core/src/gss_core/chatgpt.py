@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from gss_contracts.errors import DomainError, ErrorCode
 from gss_core.billing import address_for
@@ -22,6 +22,7 @@ from gss_core.sentinel import extract_attestation, extract_build, header_value, 
 from gss_core.session_token import SessionBundle, parse_session_bundle
 
 APP_BASE = "https://chatgpt.com"
+ACCOUNTS_CHECK_PATH = "/backend-api/accounts/check/v4-2023-04-27"
 STRIPE_BASE = "https://api.stripe.com"
 _IMPERSONATE = "chrome136"
 _CLIENT_VERSION = "prod-db390ebea64862bf1899c420a4c736e0cf639747"
@@ -192,6 +193,66 @@ _CODEX_WEB_HEADERS = {
 }
 
 
+def _account_check_item(payload: Dict[str, Any], account_id: str = "") -> tuple[Dict[str, Any], str]:
+    accounts = payload.get("accounts") if isinstance(payload, dict) else None
+    if not isinstance(accounts, dict):
+        raise ValueError("响应缺少 accounts 对象")
+    requested = str(account_id or "").strip()
+    if requested and isinstance(accounts.get(requested), dict):
+        return accounts[requested], requested
+    default = accounts.get("default")
+    if isinstance(default, dict):
+        account = default.get("account")
+        return default, str((account or {}).get("account_id") or "default")
+    for key, value in accounts.items():
+        if key != "default" and isinstance(value, dict):
+            return value, str(key)
+    raise ValueError("未找到可解析的账号条目")
+
+
+def parse_account_check(payload: Dict[str, Any], *, account_id: str = "") -> Dict[str, Any]:
+    """解析 accounts/check/v4 响应，保留可用于 checkout 的活动 id。"""
+    item, account_key = _account_check_item(payload, account_id)
+    account = item.get("account") or {}
+    entitlement = item.get("entitlement") or {}
+    campaigns = item.get("eligible_promo_campaigns") or {}
+    if not isinstance(campaigns, dict):
+        campaigns = {}
+    plan_type = str(account.get("plan_type") or "").strip().lower()
+    subscription_plan = str(entitlement.get("subscription_plan") or "").strip().lower()
+    is_free = plan_type == "free" or subscription_plan == "chatgptfreeplan"
+    parsed_campaigns = []
+    for key, raw in campaigns.items():
+        if not isinstance(raw, dict):
+            continue
+        metadata = raw.get("metadata") or {}
+        discount = metadata.get("discount") or {}
+        duration = metadata.get("duration") or {}
+        parsed_campaigns.append(
+            {
+                "key": str(key),
+                "id": str(raw.get("id") or ""),
+                "discount_percentage": discount.get("percentage"),
+                "duration_num_periods": duration.get("num_periods"),
+                "duration_period": duration.get("period"),
+                "title": metadata.get("title"),
+                "summary": metadata.get("summary"),
+                "promotion_type": metadata.get("promotion_type_label"),
+            }
+        )
+    if not is_free:
+        parsed_campaigns = []
+    plus_campaigns = [campaign for campaign in parsed_campaigns if campaign["key"] == "plus"]
+    return {
+        "account_id": str(account.get("account_id") or account_key or ""),
+        "current_plan_type": plan_type or None,
+        "subscription_plan": subscription_plan or None,
+        "is_free": is_free,
+        "plus_eligible": bool(is_free and plus_campaigns),
+        "campaigns": parsed_campaigns,
+    }
+
+
 def _checkout_body(
     *,
     plan: str,
@@ -199,6 +260,7 @@ def _checkout_body(
     currency: str,
     promo: bool = False,
     promo_code: str = "",
+    promo_campaign_id: str = "",
     workspace_name: str = "",
     seat_quantity: int = 5,
     price_interval: str = "month",
@@ -234,11 +296,14 @@ def _checkout_body(
         "purchase_attempt_id": str(uuid.uuid4()),
         "checkout_ui_mode": "custom",
     }
-    if promo:
+    campaign_id = str(promo_campaign_id or "").strip()[:120]
+    if promo or campaign_id:
         body["promo_campaign"] = {
-            "promo_campaign_id": "plus-1-month-free",
+            "promo_campaign_id": campaign_id or "plus-1-month-free",
             "is_coupon_from_query_param": False,
         }
+    # Personal Plus/Go campaigns use promo_campaign_id. Keep promo_code for the
+    # hosted Team flow, whose checkout accepts an explicit code field.
     return body
 
 
@@ -324,8 +389,10 @@ class ChatGPTClient:
     def from_raw_session(cls, raw: str, proxy: Optional[str] = None) -> "ChatGPTClient":
         bundle: SessionBundle = parse_session_bundle(raw)
         token = bundle.access_token
-        device = bundle.device_id or str(uuid.uuid5(uuid.NAMESPACE_URL, "dcp-did:" + token))
-        session_id = bundle.oai_session_id or str(uuid.uuid5(uuid.NAMESPACE_URL, "dcp-sid:" + token))
+        # 只粘贴 session token 时 accessToken 为空，改用 session token 派生设备标识，避免所有用户撞同一个 id。
+        seed = token or bundle.session_token
+        device = bundle.device_id or str(uuid.uuid5(uuid.NAMESPACE_URL, "dcp-did:" + seed))
+        session_id = bundle.oai_session_id or str(uuid.uuid5(uuid.NAMESPACE_URL, "dcp-sid:" + seed))
         return cls(
             access_token=token,
             proxy=proxy,
@@ -368,6 +435,9 @@ class ChatGPTClient:
             "sec-ch-ua-platform": '"Windows"',
             "Cookie": self._cookie_header(),
         }
+        if not self.access_token:
+            # 仅凭 session cookie 换 token 时不发空的 Bearer。
+            headers.pop("Authorization")
         if self.account_id:
             headers["chatgpt-account-id"] = self.account_id
         return headers
@@ -415,6 +485,42 @@ class ChatGPTClient:
             if name and value is not None:
                 self.extra_cookies[str(name)] = str(value)
         self.http.headers.update(self._identity_headers())
+
+    def refresh_session(self) -> bool:
+        """用当前出口 IP 请求 /api/auth/session，换取与本批次出口一致的 accessToken 与 cookie。
+
+        结账地区由出口代理决定（align_proxy_region），session 本身不绑定国家；
+        刷新的目的是让本次请求携带的 accessToken / oai-sc 等 cookie 与出口 IP
+        同批次，降低 Cloudflare 403 与 unusual activity 概率。
+
+        软失败：session-token 缺失/失效、上游报错都返回 False，调用方沿用原
+        session 继续，不阻断结账。刷新结果只在内存，不落库。
+        """
+        if not self.session_token:
+            return False
+        try:
+            response = self.http.get(
+                f"{APP_BASE}/api/auth/session",
+                headers=self._route_headers("/api/auth/session"),
+                timeout=self.timeout,
+            )
+        except Exception as exc:
+            logger.warning("session 刷新失败（继续用原 session）: %s", redact_sensitive(str(exc))[:200])
+            return False
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status >= 400:
+            logger.warning("session 刷新失败（HTTP %s），继续用原 session", status)
+            return False
+        payload = _json(response)
+        token = str(payload.get("accessToken") or "").strip()
+        if not token:
+            # session-token 已失效时上游返回 200 + 空 accessToken。
+            logger.warning("session 刷新未返回 accessToken（session-token 可能已失效），继续用原 session")
+            return False
+        self.access_token = token
+        self._merge_cookies()
+        logger.info("session 刷新成功，已与本批次出口对齐")
+        return True
 
     def warmup(self, *, page_url: str = "") -> None:
         url = page_url or f"{APP_BASE}/"
@@ -565,8 +671,9 @@ class ChatGPTClient:
             raise DomainError(ErrorCode.INVALID_SESSION, "Session 无效或已过期")
         if int(getattr(me, "status_code", 0) or 0) >= 400:
             check = self.http.get(
-                f"{APP_BASE}/backend-api/accounts/check",
-                headers=self._route_headers("/backend-api/accounts/check"),
+                f"{APP_BASE}{ACCOUNTS_CHECK_PATH}",
+                params={"timezone_offset_min": "0"},
+                headers=self._route_headers(ACCOUNTS_CHECK_PATH),
                 timeout=self.timeout,
             )
             if int(getattr(check, "status_code", 0) or 0) == 401:
@@ -581,6 +688,23 @@ class ChatGPTClient:
             raise DomainError(ErrorCode.INVALID_SESSION, "无法从 session 解析账号 id")
         self.http.headers.update(self._identity_headers())
 
+    def promo_eligibility(self, *, timezone_offset_min: int = 0) -> Dict[str, Any]:
+        """读取 v4 账号检查并返回可安全展示/复用的活动摘要。"""
+        if not self.account_id:
+            self.hydrate()
+        response = self.http.get(
+            f"{APP_BASE}{ACCOUNTS_CHECK_PATH}",
+            params={"timezone_offset_min": str(int(timezone_offset_min))},
+            headers=self._route_headers(ACCOUNTS_CHECK_PATH),
+            timeout=self.timeout,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status == 401:
+            raise DomainError(ErrorCode.INVALID_SESSION, "Session 无效或已过期")
+        if status >= 400:
+            self._raise(ErrorCode.CHECKOUT_UPSTREAM_ERROR, response, "查询优惠资格")
+        return parse_account_check(_json(response), account_id=self.account_id)
+
     def create_checkout(
         self,
         *,
@@ -588,6 +712,7 @@ class ChatGPTClient:
         country: str,
         promo: bool = False,
         promo_code: str = "",
+        promo_campaign_id: str = "",
         workspace_name: str = "",
         seat_quantity: int = 5,
         price_interval: str = "month",
@@ -595,7 +720,12 @@ class ChatGPTClient:
         country = country.upper()
         currency = currency_for(country)
         hosted = str(plan) == "team"
-        page_url = f"{APP_BASE}/?promo_campaign=plus-1-month-free" if promo else f"{APP_BASE}/"
+        campaign_id = str(promo_campaign_id or "").strip()[:120]
+        page_url = (
+            f"{APP_BASE}/?promo_campaign={quote(campaign_id or 'plus-1-month-free', safe='')}"
+            if promo or campaign_id
+            else f"{APP_BASE}/"
+        )
         self.prepare_risk(flow="chatgpt_checkout", page_url=page_url, country=country)
         if not self.account_id:
             self.hydrate()
@@ -607,6 +737,7 @@ class ChatGPTClient:
             currency=currency,
             promo=promo,
             promo_code=promo_code,
+            promo_campaign_id=campaign_id,
             workspace_name=workspace_name,
             seat_quantity=seat_quantity,
             price_interval=price_interval,
@@ -656,7 +787,14 @@ class ChatGPTClient:
             confirm_return = stripe_verify_url(session_id, processor=processor, plan=plan)
         pk = str(payload.get("publishable_key") or payload.get("publishableKey") or "").strip()
         if not pk.startswith(("pk_live_", "pk_test_")):
-            pk = "" if hosted else self._publishable_key()
+            try:
+                pk = self._publishable_key()
+            except DomainError:
+                # 托管长链拿不到公钥时降级为纯链接模式（用户手动去 Stripe 页支付）；
+                # custom 会话没有公钥就无法支付，必须抛错。
+                if not hosted:
+                    raise
+                pk = ""
         page = url if str(url).startswith("http") else page_url
         amount, quote_currency = quote_from_payload(payload, currency)
         if not hosted:
@@ -911,17 +1049,31 @@ class ChatGPTClient:
                 billing=billing,
                 currency=currency,
             )
-        response = self.http.post(
-            f"{APP_BASE}/backend-api/payments/checkout/confirm",
-            json={
-                "checkout_session_id": session_id,
-                "confirmation_token": confirm_token,
-                "confirm_token": confirm_token,
-                "selected_payment_method_type": "card",
-            },
-            headers=self._route_headers("/backend-api/payments/checkout/confirm", page_url=page_url),
-            timeout=self.timeout,
-        )
+        confirm_body: Dict[str, Any] = {
+            "checkout_session_id": session_id,
+            "confirmation_token": confirm_token,
+            "confirm_token": confirm_token,
+            "selected_payment_method_type": "card",
+        }
+
+        def _post_confirm() -> Any:
+            return self.http.post(
+                f"{APP_BASE}/backend-api/payments/checkout/confirm",
+                json=confirm_body,
+                headers=self._route_headers("/backend-api/payments/checkout/confirm", page_url=page_url),
+                timeout=self.timeout,
+            )
+
+        response = _post_confirm()
+        # 带优惠活动等会话要求新卡显式保存选择（官方前端抓包带 save_payment_method_for_reuse）；
+        # 普通会话带这个字段反而会被拒，所以只在上游明确要求时补发一次。
+        # 400 校验失败发生在扣款之前，重发是安全的。
+        if int(getattr(response, "status_code", 0) or 0) == 400 and "new_card_save_choice_required" in str(
+            getattr(response, "text", "") or ""
+        ):
+            logger.info("checkout_confirm 要求保存选择，补带 save_payment_method_for_reuse 重试")
+            confirm_body["save_payment_method_for_reuse"] = True
+            response = _post_confirm()
         if int(getattr(response, "status_code", 0) or 0) >= 400:
             self._raise(ErrorCode.PAYMENT_UNKNOWN_STATE, response, "确认结账")
         payload = _json(response)
@@ -1361,6 +1513,8 @@ class ChatGPTClient:
             self.hydrate()
         response = self.http.get(
             f"{APP_BASE}/backend-api/subscriptions",
+            # 上游现已要求显式 account_id，否则 400 "must specify either organization_id or account_id"。
+            params={"account_id": self.account_id} if self.account_id else None,
             headers=self._route_headers("/backend-api/subscriptions"),
             timeout=self.timeout,
         )

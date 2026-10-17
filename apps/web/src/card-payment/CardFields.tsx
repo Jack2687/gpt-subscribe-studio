@@ -25,6 +25,8 @@ type Props = {
   customerSessionClientSecret?: string | null;
   checkoutUrl?: string | null;
   confirmReturnUrl?: string | null;
+  /** 带优惠活动的订单：上游要求新卡显式给出保存选择。 */
+  requireSaveChoice?: boolean;
   onReady: (handle: StripeCardHandle | null) => void;
 };
 
@@ -54,6 +56,7 @@ export function StripeCardFields({
   customerSessionClientSecret,
   checkoutUrl,
   confirmReturnUrl,
+  requireSaveChoice = false,
   onReady,
 }: Props) {
   const onReadyRef = useRef(onReady);
@@ -89,6 +92,7 @@ export function StripeCardFields({
             },
           },
         };
+        if (requireSaveChoice) options.paymentMethodCreation = "manual";
         if (customerSessionClientSecret) {
           options.customerSessionClientSecret = customerSessionClientSecret;
         }
@@ -105,31 +109,79 @@ export function StripeCardFields({
             if (submitted?.error) {
               throw new Error(submitted.error.message || "请检查卡片信息");
             }
-            if (typeof stripe.createConfirmationToken !== "function") {
-              throw new Error("当前 Stripe.js 不支持 confirmation token，请刷新页面重试");
-            }
-            const result = await stripe.createConfirmationToken({
-              elements,
-              params: {
-                payment_method_data: {
-                  billing_details: {
-                    name: billing.name,
-                    address: {
-                      line1: billing.line1,
-                      city: billing.city,
-                      state: billing.state,
-                      postal_code: billing.postal_code,
-                      country: billing.country,
+            if (!requireSaveChoice) {
+              if (typeof stripe.createConfirmationToken !== "function") {
+                throw new Error("当前 Stripe.js 不支持 confirmation token，请刷新页面重试");
+              }
+              const plain = await stripe.createConfirmationToken({
+                elements,
+                params: {
+                  payment_method_data: {
+                    billing_details: {
+                      name: billing.name,
+                      address: {
+                        line1: billing.line1,
+                        city: billing.city,
+                        state: billing.state,
+                        postal_code: billing.postal_code,
+                        country: billing.country,
+                      },
                     },
                   },
+                  return_url: verifyUrl(confirmReturnUrl, checkoutUrl),
                 },
-                return_url: verifyUrl(confirmReturnUrl, checkoutUrl),
+              });
+              if (plain.error || !plain.confirmationToken?.id) {
+                throw new Error(plain.error?.message ?? "生成支付确认失败");
+              }
+              return plain.confirmationToken.id;
+            }
+            if (typeof stripe.createPaymentMethod !== "function") {
+              throw new Error("当前 Stripe.js 不支持 createPaymentMethod，请刷新页面重试");
+            }
+            // 新卡必须显式给出保存选择：先建 PaymentMethod（allow_redisplay=always），
+            // 再用它换 ConfirmationToken，否则 checkout/confirm 返回 new_card_save_choice_required。
+            const pm = await stripe.createPaymentMethod({
+              elements,
+              params: {
+                allow_redisplay: "always",
+                billing_details: {
+                  name: billing.name,
+                  address: {
+                    line1: billing.line1,
+                    city: billing.city,
+                    state: billing.state,
+                    postal_code: billing.postal_code,
+                    country: billing.country,
+                  },
+                },
               },
             });
-            if (result.error || !result.confirmationToken?.id) {
-              throw new Error(result.error?.message ?? "生成支付确认失败");
+            if (pm.error || !pm.paymentMethod?.id) {
+              throw new Error(pm.error?.message ?? "创建支付方式失败");
             }
-            return result.confirmationToken.id;
+            const form = new URLSearchParams({
+              payment_method: pm.paymentMethod.id,
+              setup_future_usage: "off_session",
+              "client_context[currency]": currencyCode,
+              "client_context[mode]": "subscription",
+              "client_context[payment_method_types][0]": "link",
+              "client_context[payment_method_types][1]": "card",
+              return_url: verifyUrl(confirmReturnUrl, checkoutUrl),
+            });
+            const res = await fetch("https://api.stripe.com/v1/confirmation_tokens", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${publishableKey}`,
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: form,
+            });
+            const body = (await res.json().catch(() => ({}))) as { id?: string; error?: { message?: string } };
+            if (!res.ok || !body.id) {
+              throw new Error(body.error?.message ?? "生成支付确认失败");
+            }
+            return body.id;
           },
         });
       } catch (err) {
@@ -147,7 +199,7 @@ export function StripeCardFields({
       onReadyRef.current(null);
       paymentEl?.unmount();
     };
-  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl]);
+  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl, requireSaveChoice]);
 
   return (
     <>
@@ -177,6 +229,14 @@ declare global {
       elements: (options?: unknown) => StripeElements;
       createConfirmationToken?: (data: unknown) => Promise<{
         confirmationToken?: { id: string };
+        error?: { message?: string };
+      }>;
+      handleNextAction?: (data: { clientSecret: string }) => Promise<{
+        paymentIntent?: { status?: string };
+        error?: { message?: string };
+      }>;
+      createPaymentMethod?: (data: unknown) => Promise<{
+        paymentMethod?: { id: string };
         error?: { message?: string };
       }>;
     };
@@ -276,7 +336,7 @@ function avoidDualStripeVersion(): void {
   };
 }
 
-function loadStripe(): Promise<void> {
+export function loadStripe(): Promise<void> {
   avoidDualStripeVersion();
   if (window.Stripe) return Promise.resolve();
   return loadScript("https://js.stripe.com/basil/stripe.js").catch(() =>

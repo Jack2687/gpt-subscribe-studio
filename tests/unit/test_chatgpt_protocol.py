@@ -11,6 +11,7 @@ from gss_core.billing import address_for
 from gss_core.money import quote_from_payload
 from gss_core.chatgpt import (
     ChatGPTClient,
+    ACCOUNTS_CHECK_PATH,
     checkout_confirm_blocked,
     checkout_confirm_blocked_advice,
     checkout_confirm_message,
@@ -21,6 +22,7 @@ from gss_core.chatgpt import (
     intent_id_from_secret,
     jwt_account_id,
     openai_internal_checkout_id,
+    parse_account_check,
     payment_intent_from_confirm,
     setup_intent_from_payload,
     stripe_checkout_id,
@@ -255,7 +257,7 @@ def test_billing_address_matches_country() -> None:
 def test_extract_attestation_and_build_from_html() -> None:
     html = (
         '<html data-build="ignored" data-seq="9758774">'
-        '"sessionId":"11111111-2222-3333-4444-555555555555"'
+        '"sessionId":"11111111-2222-3333-4444-55555555aaaa"'
         "prod-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
         '"webDeploymentAttestation":"abc.def"'
         "</html>"
@@ -264,7 +266,7 @@ def test_extract_attestation_and_build_from_html() -> None:
     version, build, session_id = extract_build(html)
     assert version == "prod-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     assert build == "9758774"
-    assert session_id == "11111111-2222-3333-4444-555555555555"
+    assert session_id == "11111111-2222-3333-4444-55555555aaaa"
 
 
 def test_header_value_strips_private_keys() -> None:
@@ -310,6 +312,82 @@ class _FakeHttp:
     def post(self, url: str, **kwargs):
         self.posts.append({"url": url, "headers": kwargs.get("headers") or {}, "json": kwargs.get("json")})
         return _FakeResponse(payload=self.payload)
+
+
+class _PromoHttp(_FakeHttp):
+    def __init__(self, payload: dict) -> None:
+        super().__init__("")
+        self.gets: list = []
+        self.promo_payload = payload
+
+    def get(self, url: str, **kwargs):
+        self.gets.append({"url": url, "params": kwargs.get("params"), "headers": kwargs.get("headers") or {}})
+        if ACCOUNTS_CHECK_PATH in url:
+            return _FakeResponse(payload=self.promo_payload)
+        return super().get(url, **kwargs)
+
+
+def test_parse_account_check_preserves_50_percent_campaign() -> None:
+    result = parse_account_check(
+        {
+            "accounts": {
+                "acct-50": {
+                    "account": {"account_id": "acct-50", "plan_type": "free"},
+                    "entitlement": {"subscription_plan": "chatgptfreeplan"},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-3-months-50-pct-off",
+                            "metadata": {
+                                "discount": {"percentage": 50},
+                                "duration": {"num_periods": 3, "period": "month"},
+                                "title": "Get a 50% discount on Plus for 3 months",
+                            },
+                        },
+                        "go": {"id": "go-50-pct-off", "metadata": {}},
+                    },
+                }
+            }
+        },
+        account_id="acct-50",
+    )
+    assert result["plus_eligible"] is True
+    assert result["campaigns"][0]["id"] == "plus-3-months-50-pct-off"
+    assert result["campaigns"][0]["discount_percentage"] == 50
+    assert result["campaigns"][0]["duration_num_periods"] == 3
+
+
+def test_promo_eligibility_uses_versioned_endpoint() -> None:
+    payload = {
+        "accounts": {
+            "acct-check": {
+                "account": {"account_id": "acct-check", "plan_type": "free"},
+                "entitlement": {"subscription_plan": "chatgptfreeplan"},
+                "eligible_promo_campaigns": {},
+            }
+        }
+    }
+    client = ChatGPTClient(access_token="tok", account_id="acct-check")
+    client._http = _PromoHttp(payload)
+    result = client.promo_eligibility(timezone_offset_min=0)
+    assert result["plus_eligible"] is False
+    request = client._http.gets[0]
+    assert request["url"].endswith(ACCOUNTS_CHECK_PATH)
+    assert request["params"] == {"timezone_offset_min": "0"}
+    assert request["headers"]["x-openai-target-path"] == ACCOUNTS_CHECK_PATH
+
+
+def test_create_checkout_sends_selected_personal_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mint_stub(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-campaign"))
+    client._http = _FakeHttp("")
+    client.create_checkout(
+        plan="plus",
+        country="US",
+        promo_campaign_id="plus-3-months-50-pct-off",
+    )
+    body = client._http.posts[0]["json"]
+    assert body["promo_campaign"]["promo_campaign_id"] == "plus-3-months-50-pct-off"
+    assert body["promo_campaign"]["is_coupon_from_query_param"] is False
 
 
 class _StripeHttp:
@@ -525,7 +603,48 @@ def test_create_checkout_maps_team_seats_and_promo(monkeypatch: pytest.MonkeyPat
     assert body["promo_code"] == "TEAM50"
     assert body["billing_details"]["currency"] == "JPY"
     assert created.checkout_kind == "hosted"
+    assert created.publishable_key == "pk_test_liveish"
     assert "pay.openai.com/c/pay/cs_test_1" in created.checkout_url
+
+
+class _NoKeyBootstrapHttp(_FakeHttp):
+    """托管长链兜底：bootstrap 拿不到公钥时，Team 仍返回长链，custom 必须报错。"""
+
+    def get(self, url: str, **kwargs):
+        if "stripe_client_bootstrap" in url:
+            return _FakeResponse(status_code=500, text='{"detail":"boom"}')
+        return super().get(url, **kwargs)
+
+
+def _mint_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "gss_core.chatgpt.mint",
+        lambda **kwargs: {
+            "p": "pow",
+            "c": "chal",
+            "t": "turn",
+            "id": kwargs.get("device_id"),
+            "flow": kwargs.get("flow"),
+        },
+    )
+
+
+def test_create_checkout_team_survives_missing_publishable_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mint_stub(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-nopk"))
+    client._http = _NoKeyBootstrapHttp("", payload={"checkout_session_id": "cs_test_1"})
+    created = client.create_checkout(plan="team", country="US")
+    assert created.checkout_kind == "hosted"
+    assert created.publishable_key == ""
+    assert "pay.openai.com/c/pay/" in created.checkout_url
+
+
+def test_create_checkout_custom_without_publishable_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mint_stub(monkeypatch)
+    client = ChatGPTClient.from_raw_session(_jwt("acct-nopk"))
+    client._http = _NoKeyBootstrapHttp("", payload={"checkout_session_id": "cs_test_1"})
+    with pytest.raises(DomainError, match="Stripe 公钥"):
+        client.create_checkout(plan="plus", country="US")
 
 
 def test_stripe_verify_url_matches_har_return_url() -> None:

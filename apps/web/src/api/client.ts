@@ -19,12 +19,13 @@ export interface Order {
     country?: string;
   } | null;
   last_error?: string | null;
-  next_action?: { type?: string; url?: string } | null;
+  next_action?: { type?: string; url?: string | null; client_secret?: string | null } | null;
   subscription?: { active: boolean; expires_at?: string | null; channel?: string | null } | null;
   checkout_kind?: string | null;
   seat_quantity?: number | null;
   workspace_name?: string | null;
   promo_code?: string | null;
+  promo_campaign_id?: string | null;
   price_interval?: string | null;
   confirm_return_url?: string | null;
 }
@@ -41,6 +42,7 @@ export async function createOrder(input: {
   billing_country: string;
   session: string;
   promo_code?: string;
+  promo_campaign_id?: string;
   workspace_name?: string;
   seat_quantity?: number;
   price_interval?: "month" | "year";
@@ -53,19 +55,50 @@ export async function createOrder(input: {
       billing_country: input.billing_country,
       session: input.session,
       promo_code: input.promo_code || "",
+      promo_campaign_id: input.promo_campaign_id || "",
       workspace_name: input.workspace_name || "",
       seat_quantity: input.seat_quantity,
       price_interval: input.price_interval || "month",
       mode: {
         account_source: "customer_session",
         card_source: "customer",
-        billing_mode: "standard",
-        risk_acknowledged: false,
+        billing_mode: input.promo_campaign_id ? "promo" : "standard",
+        risk_acknowledged: Boolean(input.promo_campaign_id),
       },
     }),
   });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as Order;
+}
+
+export interface PromoCampaign {
+  key: string;
+  campaign_id: string;
+  discount_percentage?: number | null;
+  duration_num_periods?: number | null;
+  duration_period?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  promotion_type?: string | null;
+}
+
+export interface PromoEligibility {
+  account_id?: string | null;
+  current_plan_type?: string | null;
+  subscription_plan?: string | null;
+  is_free: boolean;
+  plus_eligible: boolean;
+  campaigns: PromoCampaign[];
+}
+
+export async function checkPromoEligibility(session: string): Promise<PromoEligibility> {
+  const res = await fetch("/api/promo/eligibility", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ session }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return (await res.json()) as PromoEligibility;
 }
 
 export interface BillingInput {
@@ -91,8 +124,8 @@ export async function payOrder(
   return (await res.json()) as Order;
 }
 
-export async function verifyOrder(orderId: string): Promise<Order> {
-  const res = await fetch(`/api/orders/${orderId}/verify`, { method: "POST" });
+export async function verifyOrder(orderId: string, paid = false): Promise<Order> {
+  const res = await fetch(`/api/orders/${orderId}/verify${paid ? "?paid=true" : ""}`, { method: "POST" });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as Order;
 }

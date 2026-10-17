@@ -43,6 +43,7 @@ class CheckoutRequest:
     billing_mode: BillingMode
     proxy: Optional[str] = None
     promo_code: str = ""
+    promo_campaign_id: str = ""
     workspace_name: str = ""
     seat_quantity: int = 5
     price_interval: str = "month"
@@ -135,6 +136,32 @@ class SubscriptionInfo:
     raw_kind: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class PromoCampaignInfo:
+    """上游返回的可展示促销摘要；不包含 session/token。"""
+
+    key: str
+    campaign_id: str
+    discount_percentage: Optional[float] = None
+    duration_num_periods: Optional[int] = None
+    duration_period: Optional[str] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    promotion_type: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PromoEligibility:
+    """账号检查后的套餐与促销资格。"""
+
+    account_id: Optional[str]
+    current_plan_type: Optional[str]
+    subscription_plan: Optional[str]
+    is_free: bool
+    plus_eligible: bool
+    campaigns: List[PromoCampaignInfo] = field(default_factory=list)
+
+
 @runtime_checkable
 class AccountAdapter(Protocol):
     """账号能力：注册 / 库存 / 订阅校验。"""
@@ -143,6 +170,9 @@ class AccountAdapter(Protocol):
         ...
 
     async def subscription_status(self, session: str) -> SubscriptionInfo:
+        ...
+
+    async def promo_eligibility(self, session: str) -> PromoEligibility:
         ...
 
     async def register_account(self) -> Dict[str, Any]:
@@ -158,5 +188,7 @@ __all__ = [
     "PaymentResult",
     "PaymentAdapter",
     "SubscriptionInfo",
+    "PromoCampaignInfo",
+    "PromoEligibility",
     "AccountAdapter",
 ]

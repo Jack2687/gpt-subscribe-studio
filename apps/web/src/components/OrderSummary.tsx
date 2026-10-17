@@ -62,7 +62,7 @@ export function OrderSummary({ plan, country, order, seats }: Props) {
               {!order
                 ? "创建结账后显示"
                 : isHostedOrder(order)
-                  ? "以长链页面为准"
+                  ? "以 Stripe 结账页为准"
                   : "未从结账拿到金额"}
             </Text>
           )}

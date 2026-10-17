@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Optional
 
@@ -22,7 +24,8 @@ from gss_contracts.errors import DomainError, ErrorCode
 from gss_core.config import load_settings
 from gss_core.countries import is_supported, normalize_country
 from gss_core.proxies import align_proxy_region, configured_proxy, session_proxy
-from gss_core.chatgpt import clamp_team_seats
+from gss_core.redaction import redact_sensitive
+from gss_core.chatgpt import ChatGPTClient, clamp_team_seats
 from gss_core.session_token import parse_session_bundle
 from gss_core.vault import OrderSecrets, vault
 from gss_orchestrator.pipeline import apply_payment_result, assert_deliverable
@@ -30,6 +33,7 @@ from gss_orchestrator.pipeline import apply_payment_result, assert_deliverable
 from ..runtime import build_pipeline
 from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut, OrderPayRequest, SubscriptionOut
 from ..store import store
+from .events import notify_order_update
 
 router = APIRouter(prefix="/api", tags=["orders"])
 logger = logging.getLogger("gss.orders")
@@ -77,6 +81,7 @@ def _to_out(order: Order) -> OrderOut:
         seat_quantity=view.seat_quantity,
         workspace_name=view.workspace_name,
         promo_code=view.promo_code,
+        promo_campaign_id=view.promo_campaign_id,
         price_interval=view.price_interval,
         confirm_return_url=view.confirm_return_url,
     )
@@ -142,15 +147,50 @@ async def create_order(
         bundle = parse_session_bundle(raw_session)
     except ValueError as exc:
         raise _error(status.HTTP_401_UNAUTHORIZED, ErrorCode.INVALID_SESSION, str(exc))
-    if not bundle.access_token:
-        raise _error(status.HTTP_401_UNAUTHORIZED, ErrorCode.INVALID_SESSION, "JSON 中没有 accessToken")
-
+    
     country = normalize_country(payload.billing_country)
     if not is_supported(country):
         raise _error(status.HTTP_400_BAD_REQUEST, ErrorCode.COMPLIANCE_BLOCKED, f"不支持的地区: {payload.billing_country}")
+    
+    # 换 token 与后续提链、支付共用同一个出口（同一 sid），所以只算一次。
+    exit_proxy = align_proxy_region(
+        session_proxy("checkout", country) or configured_proxy("checkout"),
+        country,
+    )
+
+    # 只粘贴了 session token：先用本单出口换 accessToken，再按完整 session 继续。
+    if not bundle.access_token and bundle.session_token:
+        client = ChatGPTClient.from_raw_session(raw_session, proxy=exit_proxy)
+        try:
+            refreshed = await asyncio.to_thread(client.refresh_session)
+        except Exception as exc:
+            logger.warning("session token 换取失败: %s", redact_sensitive(str(exc))[:200])
+            refreshed = False
+        finally:
+            client.close()
+        if not refreshed or not client.access_token:
+            raise _error(
+                status.HTTP_401_UNAUTHORIZED,
+                ErrorCode.INVALID_SESSION,
+                "session token 已失效或无法换取 accessToken，请重新导出 session",
+            )
+        bundle.access_token = client.access_token
+        raw_session = json.dumps({
+            "accessToken": client.access_token,
+            "sessionToken": client.session_token,
+            "deviceId": client.device_id,
+            "sessionId": client.oai_session_id,
+            "cookies": client.extra_cookies,
+        })
+        logger.info("已从 session token 换取 accessToken")
+
+    if not bundle.access_token:
+        raise _error(status.HTTP_401_UNAUTHORIZED, ErrorCode.INVALID_SESSION, "JSON 中没有 accessToken")
+
     seats = 5
     workspace = str(payload.workspace_name or "").strip()
     promo_code = str(payload.promo_code or "").strip()
+    promo_campaign_id = str(payload.promo_campaign_id or "").strip()
     interval = "year" if str(payload.price_interval or "").lower() == "year" else "month"
     if plan is Plan.TEAM:
         if payload.seat_quantity is None:
@@ -161,10 +201,6 @@ async def create_order(
             raise _error(status.HTTP_400_BAD_REQUEST, ErrorCode.COMPLIANCE_BLOCKED, str(exc))
         if not workspace:
             workspace = "Team Workspace"
-    exit_proxy = align_proxy_region(
-        session_proxy("checkout", country) or configured_proxy("checkout"),
-        country,
-    )
 
     order = Order(
         idempotency_key=idempotency_key or "",
@@ -186,6 +222,7 @@ async def create_order(
             mode=mode,
             proxy=exit_proxy,
             promo_code=promo_code,
+            promo_campaign_id=promo_campaign_id,
             workspace_name=workspace,
             seat_quantity=seats,
             price_interval=interval,
@@ -212,10 +249,11 @@ async def create_order(
     view.currency = checkout.currency
     view.checkout_kind = checkout.checkout_kind or ("hosted" if plan is Plan.TEAM else "custom")
     view.confirm_return_url = checkout.confirm_return_url or None
+    view.promo_code = promo_code or None
+    view.promo_campaign_id = promo_campaign_id or None
     if plan is Plan.TEAM:
         view.seat_quantity = seats
         view.workspace_name = workspace
-        view.promo_code = promo_code or None
         view.price_interval = interval
     order.amount = checkout.amount
     secrets = vault.get(order.id)
@@ -240,6 +278,19 @@ async def create_order(
     if payload.payment_method_token:
         return await pay_order(order.id, OrderPayRequest(payment_method_token=payload.payment_method_token))
     return _to_out(store.get_order(order.id))  # type: ignore[arg-type]
+
+
+async def _mark_delivered(order_id: str) -> None:
+    """扣款成功后直接推进到 delivered，并清掉内存里的 session。"""
+    current = store.get_order(order_id)
+    if current is not None and current.status is OrderStatus.VERIFYING:
+        store.update_status(order_id, OrderStatus.ACTIVE)
+    current = store.get_order(order_id)
+    if current is not None and current.status is OrderStatus.ACTIVE:
+        store.update_status(order_id, OrderStatus.DELIVERED)
+    store.view(order_id).last_error = None
+    vault.drop(order_id)
+    await notify_order_update(order_id, OrderStatus.DELIVERED, {"payment_confirmed": True})
 
 
 @router.post(
@@ -295,6 +346,8 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
             order.billing_country,
             exc.message,
         )
+        # SSE 通知：支付失败
+        await notify_order_update(order_id, OrderStatus.FAILED, {"error": exc.message})
         raise _from_domain(exc)
 
     new_status = apply_payment_result(OrderStatus.PAYING, payment.status)
@@ -309,17 +362,18 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
         new_status,
         view.last_error or "",
     )
+    
+    # SSE 通知：支付状态更新
+    await notify_order_update(order_id, new_status, {"payment_status": payment.status.value})
 
     if new_status is OrderStatus.VERIFYING:
-        info = await pipeline.verify(session=secrets.session)
-        view.subscription = info
-        if info.active:
-            store.update_status(order_id, OrderStatus.ACTIVE)
-            assert_deliverable(OrderStatus.ACTIVE, info)
-            store.update_status(order_id, OrderStatus.DELIVERED)
-            vault.drop(order_id)
-        else:
-            view.last_error = "支付已提交，但订阅尚未生效，请稍后刷新"
+        # 业务规则：扣款成功即视为开通成功。订阅查询只作为附带信息，失败或尚未生效都不影响结果。
+        try:
+            info = await pipeline.verify(session=secrets.session)
+            view.subscription = info
+        except DomainError as exc:
+            logger.warning("verify_after_pay_failed id=%s error=%s", order_id, redact_sensitive(exc.message)[:200])
+        await _mark_delivered(order_id)
     return _to_out(store.get_order(order_id))  # type: ignore[arg-type]
 
 
@@ -328,7 +382,7 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
     response_model=OrderOut,
     responses={401: {"model": ErrorOut}, 404: {"model": ErrorOut}},
 )
-async def verify_order(order_id: str) -> OrderOut:
+async def verify_order(order_id: str, paid: bool = False) -> OrderOut:
     order = store.get_order(order_id)
     if order is None:
         raise _error(status.HTTP_404_NOT_FOUND, ErrorCode.COMPLIANCE_BLOCKED, "订单不存在")
@@ -338,12 +392,24 @@ async def verify_order(order_id: str) -> OrderOut:
     view = store.view(order_id)
     pipeline = build_pipeline()
     current = store.get_order(order_id)
-    if current is not None and current.status is OrderStatus.AWAITING_PAYMENT:
+    if current is not None and current.status in {OrderStatus.AWAITING_PAYMENT, OrderStatus.REQUIRES_ACTION, OrderStatus.UNKNOWN}:
+        # 3DS 验证完成（或不确定态复查）后从这里继续往 verifying 推进。
         store.update_status(order_id, OrderStatus.PAYING)
     current = store.get_order(order_id)
     if current is not None and current.status is OrderStatus.PAYING:
         store.update_status(order_id, OrderStatus.VERIFYING)
-    info = await pipeline.verify(session=secrets.session)
+    try:
+        info = await pipeline.verify(session=secrets.session)
+    except DomainError as exc:
+        if exc.code in {ErrorCode.INVALID_SESSION, ErrorCode.SESSION_EXPIRED}:
+            raise _from_domain(exc)
+        # 上游查询暂时出错：保持当前状态返回，由前端稍后重查，不把已支付订单打成失败。
+        logger.warning("verify_failed id=%s error=%s", order_id, redact_sensitive(exc.message)[:200])
+        if paid:
+            await _mark_delivered(order_id)
+            return _to_out(store.get_order(order_id))  # type: ignore[arg-type]
+        view.last_error = f"订阅状态查询失败，稍后会自动重试：{exc.message[:120]}"
+        return _to_out(store.get_order(order_id))  # type: ignore[arg-type]
     view.subscription = info
     if info.active:
         store.update_status(order_id, OrderStatus.ACTIVE)
@@ -351,8 +417,16 @@ async def verify_order(order_id: str) -> OrderOut:
         store.update_status(order_id, OrderStatus.DELIVERED)
         view.last_error = None
         vault.drop(order_id)
+        # SSE 通知：订阅激活并交付
+        await notify_order_update(order_id, OrderStatus.DELIVERED, {"subscription_active": True})
+    elif paid:
+        await _mark_delivered(order_id)
     else:
-        view.last_error = "订阅尚未生效。若是 Team 长链，请先打开链接完成支付再查询。"
+        view.last_error = "订阅尚未生效。若是 Team 长链,请先打开链接完成支付再查询。"
+        # SSE 通知：验证失败
+        current_status = store.get_order(order_id)
+        if current_status:
+            await notify_order_update(order_id, current_status.status, {"subscription_active": False})
     return _to_out(store.get_order(order_id))  # type: ignore[arg-type]
 
 

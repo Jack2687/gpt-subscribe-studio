@@ -10,7 +10,7 @@ from gss_core import install_logging_filter
 from gss_core.config import load_settings, missing_upstreams, use_fake_adapters
 from gss_core.proxies import GatewayStore
 
-from .routers import orders, proxies
+from .routers import events, orders, promo, proxies
 
 __version__ = "0.1.0"
 
@@ -38,6 +38,8 @@ def create_app() -> FastAPI:
         description="独立的 ChatGPT 订阅开通工具：粘贴 session，浏览器填卡。",
     )
     app.include_router(orders.router)
+    app.include_router(promo.router)
+    app.include_router(events.router)
     app.state.gateway_store = GatewayStore()
     app.include_router(proxies.router)
 

@@ -101,6 +101,15 @@ def test_next_order_status_mapping() -> None:
     assert next_order_status(OrderStatus.PAYING, PaymentStatus.DECLINED) is OrderStatus.FAILED
 
 
+def test_paying_with_processing_stays_paying() -> None:
+    """Stripe 确认未定时（PROCESSING）订单停留在 paying，可再次查询，不该抛非法迁移。"""
+
+    from gss_orchestrator.pipeline import apply_payment_result
+
+    assert next_order_status(OrderStatus.PAYING, PaymentStatus.PROCESSING) is OrderStatus.PAYING
+    assert apply_payment_result(OrderStatus.AWAITING_PAYMENT, PaymentStatus.PROCESSING) is OrderStatus.PAYING
+
+
 def test_next_order_status_rejects_illegal_transition() -> None:
     """已交付订单不能再回到 paying。"""
 

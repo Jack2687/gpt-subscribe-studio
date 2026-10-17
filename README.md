@@ -63,7 +63,8 @@
    - 服务端仅接收不透明的 `payment_method_token`（`ctoken_` 或 `pm_`），从根源杜绝卡号泄露。
 
 2. **凭证零持久化与全局脱敏**
-   - **内存金库（`SecretVault`）**：客户粘贴的 Session（支持完整 JSON 或 JWT `accessToken`）仅保存在进程内存，设置 30 分钟 TTL，一旦订阅确认交付立即从内存清除（`vault.drop`）。
+   - **内存金库（`SecretVault`）**：客户粘贴的 Session（支持完整 JSON、JWT `accessToken`、**或单独的 session token**）仅保存在进程内存，设置 30 分钟 TTL，一旦订阅确认交付立即从内存清除（`vault.drop`）。
+   - **Session Token 自动换取**：可直接粘贴 `__Secure-next-auth.session-token` Cookie（JWE 格式），系统自动用账单国对齐的代理出口换取 `accessToken`，降低 Cloudflare 403，提升成功率。
    - **全链路日志脱敏（`gss_core.redaction`）**：自动拦截并掩码日志与异常中的 JWT、`accessToken`、Session Cookie、银行卡号（Luhn 识别）及代理账密。
 
 3. **自包含的 ChatGPT & Stripe 协议引擎**
@@ -105,7 +106,7 @@
 
 `US`（美国/USD）、`PH`（菲律宾/PHP）、`CL`（智利/CLP）、`EG`（埃及/EGP）、`JP`（日本/JPY）、`GB`（英国/GBP）、`TR`（土耳其/TRY）、`BR`（巴西/BRL）、`MX`（墨西哥/MXN）、`IN`（印度/INR）、`ID`（印尼/IDR）、`VN`（越南/VND）、`TH`（泰国/THB）、`MY`（马来西亚/MYR）、`SG`（新加坡/SGD）、`KR`（韩国/KRW）、`AU`（澳大利亚/AUD）、`CA`（加拿大/CAD）、`DE`（德国/EUR）、`NL`（荷兰/EUR）、`PL`（波兰/PLN）、`AR`（阿根廷/ARS）、`SA`（沙特/SAR）、`AE`（阿联酋/AED）、`ZA`（南非/ZAR）。
 
-> **重要提示**：订单所选的 `billing_country` 必须与导出该 ChatGPT Session 时的网络国家及代理出口国家保持一致，否则会触发 Stripe `Billing country must match` 或风控拦截。
+> **说明**：结账地区由订单所选的 `billing_country` 决定，系统会自动把出口代理对齐到该地区；session 导出国家无需一致——创建结账前程序会用同一出口调用 `/api/auth/session` 刷新凭证（软失败不阻断），使 accessToken/cookie 与本次出口 IP 同批次。若仍被上游判定 `unusual activity`，再用账单国网络导出的新 session 重试即可。
 
 ### 三种正交模式开关
 

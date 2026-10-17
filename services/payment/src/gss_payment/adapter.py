@@ -15,10 +15,12 @@ from gss_core.chatgpt import (
     checkout_confirm_blocked,
     checkout_confirm_blocked_advice,
     checkout_confirm_message,
+    checkout_requires_approval,
     decline_message,
     nested_intent_status,
     payment_intent_from_confirm,
     public_checkout_id,
+    redact_sensitive,
     stripe_verify_url,
     submission_failure_detail,
     submission_state,
@@ -90,14 +92,23 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
         client.language = locale_for(req.country)
         client.timezone = timezone_for(req.country)
         page_url = req.checkout_url if str(req.checkout_url or "").startswith(APP_BASE) else f"{APP_BASE}/"
+        # 支付阶段出口同样已对齐账单国：先刷新 session 再 warmup，
+        # 让确认请求的 cookie/凭证与本批次出口同批次。软失败不阻断。
+        client.refresh_session()
         client.warmup(page_url=page_url)
         pk = req.publishable_key or ""
         if not pk:
-            raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少 Stripe 公钥")
+            raise DomainError(
+                ErrorCode.PAYMENT_UNKNOWN_STATE,
+                "缺少 Stripe 公钥。若是 Team 长链订单，请打开长链手动支付后查询订阅。",
+            )
 
         billing = dict(req.billing or address_for(req.country))
         checkout_id = public_checkout_id(checkout_id)
         stripe_custom = checkout_id.startswith("cs_")
+        # Team 托管长链也是 cs_ 会话：同样走 Stripe payment_pages 确认，但审批不经
+        # chatgpt.com 后端（长链页面本身不调 approve），approve 被拒时改用轮询等待。
+        hosted = str(req.plan or "").strip().lower() == "team"
         for attempt in range(_APPROVAL_RETRIES + 1):
             confirm_token = _confirmation_token(
                 client, publishable_key=pk, token=req.payment_method_token or ""
@@ -111,13 +122,30 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
                 publishable_key=pk,
             )
             if stripe_custom:
-                confirmed = client.finalize_stripe_custom_checkout(
-                    checkout_session_id=checkout_id,
-                    publishable_key=pk,
-                    checkout_url=page_url,
-                    processor_entity=_processor_from_checkout_url(page_url),
-                    confirmed=confirmed,
-                )
+                try:
+                    confirmed = client.finalize_stripe_custom_checkout(
+                        checkout_session_id=checkout_id,
+                        publishable_key=pk,
+                        checkout_url=page_url,
+                        processor_entity=_processor_from_checkout_url(page_url),
+                        confirmed=confirmed,
+                    )
+                except DomainError as exc:
+                    if not (hosted and checkout_requires_approval(confirmed)):
+                        raise
+                    logger.warning(
+                        "hosted approve 失败，改为轮询等待: %s",
+                        redact_sensitive(str(exc))[:200],
+                    )
+                    confirmed = (
+                        client.poll_payment_page(
+                            checkout_session_id=checkout_id,
+                            publishable_key=pk,
+                            attempts=4,
+                            interval=1.0,
+                        )
+                        or confirmed
+                    )
             if attempt < _APPROVAL_RETRIES and _approval_retryable(confirmed):
                 logger.warning("checkout_approval_internal_error 无 PaymentIntent，重试 %s/%s", attempt + 1, _APPROVAL_RETRIES)
                 continue
@@ -160,11 +188,12 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
                 if live_status == "succeeded":
                     return _result_from_intent(live, intent_id)
                 if live:
-                    return _result_from_intent(live, intent_id)
+                    return _result_from_intent(live, intent_id, intent_secret)
             if pi_status in {"succeeded", "processing", "requires_action"}:
                 return _result_from_intent(
                     nested if nested else {"status": pi_status},
                     intent_id,
+                    intent_secret,
                 )
             if intent_secret:
                 if not return_url:
@@ -180,7 +209,7 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
                     confirmation_token=confirm_token,
                     return_url=return_url,
                 )
-                return _result_from_intent(final, intent_id)
+                return _result_from_intent(final, intent_id, intent_secret)
         if chatgpt_status in {"succeeded", "success", "complete", "completed"} or state in {
             "succeeded",
             "complete",
@@ -213,16 +242,20 @@ def _confirmation_token(client: ChatGPTClient, *, publishable_key: str, token: s
     raise DomainError(ErrorCode.PAYMENT_DECLINED, "支付标识无效")
 
 
-def _result_from_intent(payload: Dict[str, Any], intent_id: str) -> PaymentResult:
+def _result_from_intent(payload: Dict[str, Any], intent_id: str, client_secret: str = "") -> PaymentResult:
     status = str(payload.get("status") or "")
     if status == "requires_action":
         next_action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
+        url = (next_action or {}).get("redirect_to_url", {}).get("url") or (next_action or {}).get("url")
+        secret = str(payload.get("client_secret") or client_secret or "")
         return PaymentResult(
             status=PaymentStatus.REQUIRES_ACTION,
+            # 有跳转链接就直接给链接；3DS2（use_stripe_sdk）没有链接，
+            # 需要浏览器用 PI 的 client_secret 调 stripe.handleNextAction 弹出验证窗口。
             next_action={
-                "type": "3ds_redirect",
-                "url": (next_action or {}).get("redirect_to_url", {}).get("url")
-                or (next_action or {}).get("url"),
+                "type": "3ds_redirect" if url else "use_stripe_sdk",
+                "url": url,
+                "client_secret": secret or None,
             },
             provider_ref=intent_id,
             message="需要完成 3DS 验证",

@@ -26,6 +26,7 @@ class OrderView:
     seat_quantity: Optional[int] = None
     workspace_name: Optional[str] = None
     promo_code: Optional[str] = None
+    promo_campaign_id: Optional[str] = None
     price_interval: Optional[str] = None
     confirm_return_url: Optional[str] = None
 

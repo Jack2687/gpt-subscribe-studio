@@ -11,7 +11,7 @@ services:
     environment:
       GSS_DATA_DIR: /data
       GSS_CONFIG_DIR: /config
-      GSS_ENABLE_PROMO: "false"
+      GSS_ENABLE_PROMO: ${GSS_ENABLE_PROMO:-false}
       GSS_USE_FAKE: "false"
       GSS_AUTH_FILE: /run/gss-auth.json
       GSS_PUBLIC_ORIGIN: ${GSS_PUBLIC_ORIGIN:-}

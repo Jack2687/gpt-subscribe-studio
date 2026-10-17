@@ -74,6 +74,7 @@ def test_fake_checkout_team_uses_seats_and_hosted_url() -> None:
     assert res.currency == "JPY"
     assert str(res.amount) == "200"
     assert res.checkout_kind == "hosted"
+    assert res.publishable_key == "pk_test_fake"
     assert "pay.openai.com/c/pay/" in res.checkout_url
     assert fake.calls[0].seat_quantity == 8
     assert fake.calls[0].promo_code == "TEAM50"

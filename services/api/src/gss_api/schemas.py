@@ -21,6 +21,7 @@ class OrderCreateRequest(BaseModel):
     session: Optional[str] = None
     payment_method_token: Optional[str] = None
     promo_code: str = ""
+    promo_campaign_id: str = ""
     workspace_name: str = ""
     seat_quantity: Optional[int] = None
     price_interval: str = "month"
@@ -65,6 +66,7 @@ class OrderOut(BaseModel):
     seat_quantity: Optional[int] = None
     workspace_name: Optional[str] = None
     promo_code: Optional[str] = None
+    promo_campaign_id: Optional[str] = None
     price_interval: Optional[str] = None
     confirm_return_url: Optional[str] = None
 

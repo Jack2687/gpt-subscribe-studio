@@ -64,7 +64,20 @@ class CheckoutAdapter(Protocol):
 | 结账接口字段变化 | `checkout` adapter | 只改 adapter，补离线契约测试 |
 | 档位标识变化 | `apps/web` + `contracts` | 更新契约枚举，前端同步 |
 
-## 5. 合规提示
+## 5. Plus 活动资格与结账
+
+账号资格使用只读接口
+`GET /backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=0`，请求经
+`configured_proxy("checkout")` 发出。解析规则是：账号为 `free`（或
+`chatgptfreeplan`）且 `eligible_promo_campaigns.plus` 存在时，才报告 Plus 资格；
+折扣百分比、期限和完整 campaign id 都来自响应。50% 活动应复用返回的 campaign
+id（例如按月数不同的 `plus-*-50-pct-off`），不要把 `50,off` 当作固定码猜测。
+
+前端可通过 `POST /api/promo/eligibility` 读取摘要；创建 Plus 订单时把选中的
+`promo_campaign_id` 放入请求，checkout 会提交 `promo_campaign`。Team 结账继续使用
+`promo_code` 字段。促销模式仍受 `GSS_ENABLE_PROMO_MODE` 和显式风险确认保护。
+
+## 6. 合规提示
 
 - 上游 README 自身的免责声明同样适用于本平台：仅在获得授权、符合上游服务条款与地区法规时使用。
 - `promo`（促销/零元）相关能力来自上游，属于**平台风控与支付合规的高风险区**，

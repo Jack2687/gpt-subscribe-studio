@@ -26,6 +26,11 @@ def parse_session_bundle(raw: str) -> SessionBundle:
         raise ValueError("session 为空")
     if text.lower().startswith("bearer "):
         text = text.split(None, 1)[1].strip()
+    
+    # 处理 __Secure-next-auth.session-token=xxx 格式
+    if text.startswith("__Secure-next-auth.session-token="):
+        text = text.split("=", 1)[1].strip()
+    
     if text.startswith("{") or text.startswith("["):
         try:
             data: Any = json.loads(text)
@@ -36,6 +41,16 @@ def parse_session_bundle(raw: str) -> SessionBundle:
         cookies = _parse_cookie_header(text)
         if "__Secure-next-auth.session-token" in cookies or "oai-did" in cookies:
             raise ValueError("请粘贴包含 accessToken 的整段 session JSON，仅 Cookie 不够")
+    
+    # 识别 JWE（5段）vs JWS（3段）
+    # JWE (session token): eyJ...dir...  (5段，用于 next-auth)
+    # JWS (access token): eyJ...alg... (3段，用于 API 授权)
+    if text.startswith("eyJ") and text.count(".") >= 2:
+        parts = text.split(".")
+        if len(parts) == 5:
+            # 这是 JWE，当作 session_token 而非 access_token
+            return SessionBundle(access_token="", session_token=text)
+    
     return SessionBundle(access_token=text)
 
 

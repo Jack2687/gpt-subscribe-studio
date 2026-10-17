@@ -67,6 +67,7 @@ class OrderPipeline:
         mode: Mode,
         proxy: Optional[str] = None,
         promo_code: str = "",
+        promo_campaign_id: str = "",
         workspace_name: str = "",
         seat_quantity: int = 5,
         price_interval: str = "month",
@@ -82,6 +83,7 @@ class OrderPipeline:
             billing_mode=mode.billing_mode,
             proxy=proxy,
             promo_code=promo_code,
+            promo_campaign_id=promo_campaign_id,
             workspace_name=workspace_name,
             seat_quantity=seat_quantity,
             price_interval=price_interval,
@@ -140,6 +142,9 @@ def next_order_status(current: OrderStatus, payment: PaymentStatus) -> OrderStat
     """由支付结果推导订单的下一状态，并校验迁移合法性。"""
 
     target = PAYMENT_STATUS_TO_ORDER[payment]
+    if target is current:
+        # 支付仍在进行（PROCESSING）时订单停留在 paying，不算迁移。
+        return current
     assert_transition(current, target)
     return target
 
