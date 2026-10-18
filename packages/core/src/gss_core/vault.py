@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import RLock
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 def _utcnow() -> datetime:
@@ -26,6 +26,7 @@ class OrderSecrets:
     oai_session_id: str = ""
     proxy: str = ""
     billing: Dict[str, str] = field(default_factory=dict)
+    team_context: Optional[Dict[str, Any]] = None
     expires_at: datetime = field(default_factory=lambda: _utcnow() + timedelta(minutes=30))
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -21,22 +23,25 @@ from gss_contracts import (
     Plan,
 )
 from gss_contracts.errors import DomainError, ErrorCode
-from gss_core.config import load_settings
+from gss_core.config import load_settings, use_fake_adapters
 from gss_core.countries import is_supported, normalize_country
+from gss_core.hosted import TeamHostedClient
 from gss_core.proxies import align_proxy_region, configured_proxy, session_proxy
 from gss_core.redaction import redact_sensitive
 from gss_core.chatgpt import ChatGPTClient, clamp_team_seats
 from gss_core.session_token import parse_session_bundle
 from gss_core.vault import OrderSecrets, vault
 from gss_orchestrator.pipeline import apply_payment_result, assert_deliverable
+from gss_payment.adapter import hosted_payment_result
 
 from ..runtime import build_pipeline
-from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut, OrderPayRequest, SubscriptionOut
+from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut, OrderPayRequest, SubscriptionOut, TeamPrepareRequest
 from ..store import store
 from .events import notify_order_update
 
 router = APIRouter(prefix="/api", tags=["orders"])
 logger = logging.getLogger("gss.orders")
+_team_locks: dict[str, asyncio.Lock] = {}
 
 
 def _to_mode(mode_in: ModeIn) -> Mode:
@@ -289,8 +294,111 @@ async def _mark_delivered(order_id: str) -> None:
     if current is not None and current.status is OrderStatus.ACTIVE:
         store.update_status(order_id, OrderStatus.DELIVERED)
     store.view(order_id).last_error = None
+    store.view(order_id).next_action = None
     vault.drop(order_id)
     await notify_order_update(order_id, OrderStatus.DELIVERED, {"payment_confirmed": True})
+
+
+def _team_client(secrets: OrderSecrets) -> ChatGPTClient:
+    client = ChatGPTClient.from_raw_session(secrets.session, proxy=secrets.proxy or None)
+    client.timeout = 30.0
+    return client
+
+
+def _team_quote(view, context: dict) -> None:
+    code = context["currency"].upper()
+    zero = {"BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF"}
+    divisor = 1 if code in zero else 100
+    view.amount = str(Decimal(context["amount_minor"]) / divisor)
+    view.currency = code
+
+
+@router.post("/orders/{order_id}/team/prepare", tags=["orders"])
+async def prepare_team(order_id: str, payload: TeamPrepareRequest) -> dict:
+    async with _team_locks.setdefault(order_id, asyncio.Lock()):
+        order = store.get_order(order_id)
+        if order is None or order.plan is not Plan.TEAM:
+            raise HTTPException(404, "Team 订单不存在")
+        if order.status is not OrderStatus.AWAITING_PAYMENT:
+            raise HTTPException(409, "已提交的订单请查询支付状态，不要重新提交")
+        secrets = vault.get(order_id)
+        if secrets is None:
+            raise _error(401, ErrorCode.SESSION_EXPIRED, "session 已过期")
+        billing = {k: v.strip() for k, v in payload.billing.model_dump().items()}
+        billing["country"] = billing["country"].upper()
+        if not is_supported(billing["country"]):
+            raise HTTPException(400, "不支持的支付账单国家")
+        if use_fake_adapters():
+            context = {"context_id": "fixture-context", "session_id": secrets.checkout_session_id,
+                "publishable_key": secrets.publishable_key, "eid": "NA", "amount_minor": 115000,
+                "currency": "egp", "billing": billing, "prepared_at": time.time(),
+                "checkout_config_id": "fixture-config", "elements_session_id": "elements_fixture",
+                "client_session_id": "fixture-client", "guid": "fixture-guid", "muid": "fixture-muid", "sid": "fixture-sid",
+                "passive_captcha": {}}
+        else:
+            client = _team_client(secrets)
+            try:
+                context = await asyncio.to_thread(TeamHostedClient(client).prepare,
+                    session_id=secrets.checkout_session_id, key=secrets.publishable_key, billing=billing,
+                    currency=store.view(order_id).currency or "", browser_locale=payload.browser_locale,
+                    browser_timezone=payload.browser_timezone)
+            except DomainError as exc:
+                raise _from_domain(exc)
+            finally:
+                client.close()
+        secrets.team_context = context
+        secrets.billing = billing
+        vault.put(order_id, secrets)
+        view = store.view(order_id)
+        view.billing = billing
+        _team_quote(view, context)
+        return {"order": _to_out(order).model_dump(), "context": {k: context[k] for k in (
+            "context_id", "session_id", "publishable_key", "eid", "amount_minor", "currency",
+            "checkout_config_id", "elements_session_id", "client_session_id", "guid", "muid", "sid",
+            "passive_captcha", "customer_email") if k in context}}
+
+
+@router.post("/orders/{order_id}/team/poll", response_model=OrderOut)
+async def poll_team(order_id: str) -> OrderOut:
+    async with _team_locks.setdefault(order_id, asyncio.Lock()):
+        order = store.get_order(order_id)
+        if order is None or order.plan is not Plan.TEAM:
+            raise HTTPException(404, "Team 订单不存在")
+        if order.status in {OrderStatus.DELIVERED, OrderStatus.FAILED, OrderStatus.REJECTED}:
+            return _to_out(order)
+        secrets = vault.get(order_id)
+        if secrets is None:
+            raise _error(401, ErrorCode.SESSION_EXPIRED, "session 已过期")
+        client = _team_client(secrets)
+        try:
+            payload = await asyncio.to_thread(TeamHostedClient(client).poll,
+                session_id=secrets.checkout_session_id, key=secrets.publishable_key)
+        except DomainError as exc:
+            raise _from_domain(exc)
+        finally:
+            client.close()
+        result = hosted_payment_result(payload, secrets.checkout_session_id, store.view(order_id).checkout_url or "")
+        view = store.view(order_id)
+        if result.status.value == "succeeded":
+            if order.status in {OrderStatus.AWAITING_PAYMENT, OrderStatus.REQUIRES_ACTION, OrderStatus.UNKNOWN}:
+                store.update_status(order_id, OrderStatus.PAYING)
+            if order.status is OrderStatus.PAYING:
+                store.update_status(order_id, OrderStatus.VERIFYING)
+            view.next_action = None
+            await _mark_delivered(order_id)
+        elif result.status.value == "declined":
+            store.update_status(order_id, OrderStatus.FAILED)
+            view.last_error = result.message
+            view.next_action = None
+            await notify_order_update(order_id, OrderStatus.FAILED)
+        elif result.status.value == "requires_action":
+            if order.status is OrderStatus.AWAITING_PAYMENT:
+                store.update_status(order_id, OrderStatus.PAYING)
+            store.update_status(order_id, OrderStatus.REQUIRES_ACTION)
+            view.next_action = result.next_action
+            view.last_error = result.message
+        # Pending poll responses must not erase an earlier challenge/client_secret.
+        return _to_out(order)
 
 
 @router.post(
@@ -299,17 +407,47 @@ async def _mark_delivered(order_id: str) -> None:
     responses={400: {"model": ErrorOut}, 401: {"model": ErrorOut}, 404: {"model": ErrorOut}},
 )
 async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
+    async with _team_locks.setdefault(order_id, asyncio.Lock()):
+        return await _pay_order(order_id, payload)
+
+
+async def _pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
     order = store.get_order(order_id)
     if order is None:
         raise _error(status.HTTP_404_NOT_FOUND, ErrorCode.COMPLIANCE_BLOCKED, "订单不存在")
+    if order.status in {OrderStatus.DELIVERED, OrderStatus.ACTIVE}:
+        return _to_out(order)
+    if order.status is not OrderStatus.AWAITING_PAYMENT:
+        raise HTTPException(409, "支付已提交，请查询状态，不要重复确认")
     secrets = vault.get(order_id)
     if secrets is None:
         raise _error(status.HTTP_401_UNAUTHORIZED, ErrorCode.SESSION_EXPIRED, "session 已过期，请重新提交")
 
+    if order.plan is Plan.TEAM and not use_fake_adapters():
+        context = secrets.team_context
+        address = {k: v.strip() for k, v in payload.billing.model_dump().items()} if payload.billing else dict(secrets.billing)
+        address["country"] = address.get("country", "").upper()
+        address.setdefault("email", "")
+        if not context or context.get("context_id") != payload.team_context_id:
+            raise HTTPException(409, "Team 会话上下文不匹配，请重新初始化")
+        if time.time() - context["prepared_at"] > 600 or address != context["billing"]:
+            raise HTTPException(409, "Team 账单或会话已变更，请重新初始化")
+        if context.get("passive_captcha", {}).get("site_key") and not payload.passive_captcha_token:
+            raise HTTPException(400, "请先完成当前会话的 Stripe 验证")
+
     if payload.billing is not None:
         custom = {k: v.strip() for k, v in payload.billing.model_dump().items()}
         custom["country"] = custom["country"].upper()
-        if custom["country"] != order.billing_country:
+        # Team 的 order.billing_country 是创建结账的地区（决定币种）；
+        # custom.country 是支付账单国家，独立用于 PaymentMethod 和 Stripe tax_region。
+        if order.plan is Plan.TEAM:
+            if not is_supported(custom["country"]):
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    ErrorCode.BILLING_COUNTRY_MISMATCH,
+                    f"不支持的账单国家: {custom['country']}",
+                )
+        elif custom["country"] != order.billing_country:
             raise _error(
                 status.HTTP_400_BAD_REQUEST,
                 ErrorCode.BILLING_COUNTRY_MISMATCH,
@@ -335,10 +473,13 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
             checkout_proxy=secrets.proxy or None,
             approve_proxy=secrets.proxy or None,
             billing=secrets.billing or None,
-            plan=str(order.plan),
+            plan=str(order.plan), team_context=secrets.team_context,
+            passive_captcha_token=payload.passive_captcha_token, rv_timestamp=payload.rv_timestamp,
         )
     except DomainError as exc:
-        store.update_status(order_id, OrderStatus.FAILED)
+        uncertain = order.plan is Plan.TEAM and exc.code is ErrorCode.PAYMENT_UNKNOWN_STATE
+        failed_status = OrderStatus.UNKNOWN if uncertain else OrderStatus.FAILED
+        store.update_status(order_id, failed_status)
         view.last_error = exc.message
         logger.info(
             "pay_failed id=%s country=%s error=%s",
@@ -347,7 +488,7 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
             exc.message,
         )
         # SSE 通知：支付失败
-        await notify_order_update(order_id, OrderStatus.FAILED, {"error": exc.message})
+        await notify_order_update(order_id, failed_status, {"error": exc.message})
         raise _from_domain(exc)
 
     new_status = apply_payment_result(OrderStatus.PAYING, payment.status)
@@ -366,7 +507,9 @@ async def pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
     # SSE 通知：支付状态更新
     await notify_order_update(order_id, new_status, {"payment_status": payment.status.value})
 
-    if new_status is OrderStatus.VERIFYING:
+    if new_status is OrderStatus.VERIFYING and order.plan is Plan.TEAM:
+        await _mark_delivered(order_id)
+    elif new_status is OrderStatus.VERIFYING:
         # 业务规则：扣款成功即视为开通成功。订阅查询只作为附带信息，失败或尚未生效都不影响结果。
         try:
             info = await pipeline.verify(session=secrets.session)
@@ -386,6 +529,8 @@ async def verify_order(order_id: str, paid: bool = False) -> OrderOut:
     order = store.get_order(order_id)
     if order is None:
         raise _error(status.HTTP_404_NOT_FOUND, ErrorCode.COMPLIANCE_BLOCKED, "订单不存在")
+    if order.plan is Plan.TEAM and not use_fake_adapters():
+        return await poll_team(order_id)
     secrets = vault.get(order_id)
     if secrets is None:
         raise _error(status.HTTP_401_UNAUTHORIZED, ErrorCode.SESSION_EXPIRED, "session 已过期，请重新提交")

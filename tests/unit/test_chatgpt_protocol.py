@@ -176,11 +176,17 @@ def test_checkout_confirm_blocked_is_detected() -> None:
     assert checkout_confirm_blocked({"result": "blocked"})
     assert not checkout_confirm_blocked({"status": "success"})
     assert checkout_confirm_message({"status": "blocked", "error": {"code": "risk_blocked"}}) == "risk_blocked"
-    us = checkout_confirm_blocked_advice("US")
-    jp = checkout_confirm_blocked_advice("JP")
-    assert "不能选美国" in us
-    assert "日元" in jp
-    assert "blocked" in us and "blocked" in jp
+    expected = "ChatGPT 未批准本次结账（blocked），上游未提供明确原因。尚未确认扣款，请先核对账单。"
+    for country in ("US", "JP", "PH", "EG", ""):
+        assert checkout_confirm_blocked_advice(country) == expected
+
+
+def test_blocked_message_preserves_explicit_upstream_reason() -> None:
+    message = checkout_confirm_blocked_advice("PH", upstream_reason="risk_blocked")
+    assert "上游信息：risk_blocked" in message
+    assert "上游未提供明确原因" not in message
+    assert "session" not in message and "国家" not in message
+    assert "（rejected）" in checkout_confirm_blocked_advice(upstream_status="rejected")
 
 
 def test_payment_intent_from_chatgpt_confirm_success() -> None:
@@ -951,3 +957,6 @@ def test_decline_message_keeps_code_and_adds_advice() -> None:
     assert known.startswith("发卡行拒绝: do_not_honor。")
     assert "联系银行" in known
     assert decline_message("some_new_code") == "发卡行拒绝: some_new_code"
+
+
+# Team Hosted currency/address regressions live in test_hosted_protocol.py.

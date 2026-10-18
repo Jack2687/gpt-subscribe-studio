@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import os
 
+import pytest
+
 os.environ["GSS_USE_FAKE"] = "1"
 
 from fastapi.testclient import TestClient
@@ -128,18 +130,19 @@ def test_team_hosted_checkout_requires_seats_and_returns_link() -> None:
     assert verified.json()["status"] == "delivered"
 
 
-def test_team_hosted_order_can_pay_in_app() -> None:
-    """Team 托管结账拿到公钥后，也能像 Plus 一样站内支付交付。"""
+@pytest.mark.parametrize("payment_country,state", [("US", "OR"), ("JP", "Tokyo")])
+def test_team_egypt_checkout_preserves_currency_with_independent_billing(monkeypatch, payment_country, state) -> None:
+    """EG / EGP 创建 Team；支付地址的国家独立传到适配器，不改订单币种。"""
+    from gss_api.runtime import build_pipeline
+    pipeline = build_pipeline()
+    monkeypatch.setattr("gss_api.routers.orders.build_pipeline", lambda: pipeline)
     store.clear()
     client = TestClient(create_app())
     created = client.post(
         "/api/orders",
         json={
-            "plan": "team",
-            "billing_country": "JP",
-            "session": '{"accessToken":"fake-session"}',
-            "seat_quantity": 5,
-            "workspace_name": "Desk",
+            "plan": "team", "billing_country": "EG", "session": '{"accessToken":"fake-session"}',
+            "seat_quantity": 2, "workspace_name": "Desk",
             "mode": {"account_source": "customer_session", "card_source": "customer"},
         },
     )
@@ -147,24 +150,23 @@ def test_team_hosted_order_can_pay_in_app() -> None:
     body = created.json()
     assert body["checkout_kind"] == "hosted"
     assert body["publishable_key"] == "pk_test_fake"
-
-    paid = client.post(
-        f"/api/orders/{body['id']}/pay",
-        json={
-            "payment_method_token": "ctoken_fake",
-            "billing": {
-                "name": "Hanako Yamada",
-                "line1": "1 Chome",
-                "city": "Tokyo",
-                "state": "",
-                "postal_code": "150-0002",
-                "country": "JP",
-            },
-        },
-    )
+    assert body["currency"] == "EGP"
+    assert pipeline.deps.checkout.calls[0].billing_country == "EG"
+    address = {"name": "Fixture User", "line1": "Fixture Street", "city": "Fixture City",
+               "state": state, "postal_code": "00000", "country": payment_country.lower()}
+    paid = client.post(f"/api/orders/{body['id']}/pay",
+                       json={"payment_method_token": "pm_fake", "billing": address})
     assert paid.status_code == 200, paid.text
-    assert paid.json()["status"] == "delivered"
-    assert paid.json()["subscription"]["active"] is True
+    result = paid.json()
+    assert result["status"] == "delivered"
+    assert result["billing_country"] == "EG"
+    assert result["currency"] == "EGP"
+    assert result["billing"]["country"] == payment_country
+    request = pipeline.deps.payment.calls[0]
+    assert request.country == "EG"
+    assert request.billing["country"] == payment_country
+    assert request.billing["state"] == state
+    assert request.payment_method_token == "pm_fake"
 
 
 def test_unknown_region_is_400() -> None:

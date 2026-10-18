@@ -24,10 +24,29 @@ export function isSettled(status: string): boolean {
 // 改名前的旧键，只读一次用来保留已有的开通记录。
 const LEGACY_KEY = "dcp.history.v1";
 
+export function normalizeHistoryError(error: string | null | undefined): string | null | undefined {
+  if (typeof error !== "string") return error;
+  const marker = "ChatGPT 未批准这次支付（blocked）。";
+  const start = error.indexOf(marker);
+  if (start < 0) return error;
+  const suffix = error.slice(start + marker.length);
+  if (!suffix.startsWith("不是发卡行拒卡。") && !suffix.startsWith("不是发卡行拒卡，是账号/地区风控。")) return error;
+  // Replace only the known application-generated legacy explanation, not upstream details.
+  const reason = error.slice(0, start).trim().replace(/[。\s]+$/, "");
+  return reason
+    ? `ChatGPT 未批准本次结账（blocked）。上游信息：${reason}。尚未确认扣款，请先核对账单。`
+    : "ChatGPT 未批准本次结账（blocked），上游未提供明确原因。尚未确认扣款，请先核对账单。";
+}
+
 export function loadHistory(): HistoryRecord[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY) ?? "[]");
-    return Array.isArray(parsed) ? (parsed as HistoryRecord[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    const normalized = (parsed as HistoryRecord[]).map((item) => ({ ...item, error: normalizeHistoryError(item.error) }));
+    if (normalized.some((item, i) => item.error !== parsed[i].error)) {
+      try { localStorage.setItem(KEY, JSON.stringify(normalized)); } catch { /* display normalized data even when storage is full */ }
+    }
+    return normalized;
   } catch {
     return [];
   }
@@ -41,7 +60,7 @@ export function recordOrder(order: Order): HistoryRecord[] {
     amount: order.amount,
     currency: order.currency,
     status: order.status,
-    error: order.last_error,
+    error: normalizeHistoryError(order.last_error),
     at: Date.now(),
   };
   const list = [next, ...loadHistory().filter((item) => item.id !== order.id)].slice(0, MAX);

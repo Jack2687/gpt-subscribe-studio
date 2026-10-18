@@ -8,6 +8,8 @@ import {
   getOrder,
   isHostedOrder,
   payOrder,
+  prepareTeam,
+  pollTeam,
   verifyOrder,
   type BillingInput,
   type Order,
@@ -22,6 +24,9 @@ import { PlanPicker, type TeamValues } from "../components/PlanPicker";
 import { ResultPanel } from "../components/ResultPanel";
 import { SessionField } from "../components/SessionField";
 import { StripeCardFields, loadStripe, type StripeCardHandle } from "../card-payment/CardFields";
+import { TeamPaymentPanel } from "../components/TeamPaymentPanel";
+import { hostedCaptcha } from "../card-payment/hostedCaptcha";
+import { createTeamPaymentMethod, emptyTeamCard } from "../card-payment/teamPayment";
 
 interface Props {
   onRecord: (order: Order) => void;
@@ -41,6 +46,10 @@ export function OrderNew({ onRecord }: Props) {
   const [result, setResult] = useState<Order | null>(null);
   const [addr, setAddr] = useState<BillingInput | null>(null);
   const [card, setCard] = useState<StripeCardHandle | null>(null);
+  const [teamCard, setTeamCard] = useState(emptyTeamCard);
+  const [teamBilling, setTeamBilling] = useState<BillingInput>({
+    name: "", line1: "", city: "", state: "", postal_code: "", country: "US",
+  });
   const [error, setError] = useState<string | null>(null);
   const [promo, setPromo] = useState<PromoEligibility | null>(null);
   const [promoCampaignId, setPromoCampaignId] = useState("");
@@ -48,6 +57,7 @@ export function OrderNew({ onRecord }: Props) {
   const [promoError, setPromoError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const hosted = order ? isHostedOrder(order) : plan === "team";
+  const teamOrder = (order?.plan ?? plan) === "team";
   // Team 托管结账只要拿到 Stripe 公钥，就能和 Plus 一样站内填卡支付；
   // 没有公钥才退回「打开长链手动付款」。
   const linkOnly = Boolean(order && hosted && !order.publishable_key);
@@ -62,6 +72,8 @@ export function OrderNew({ onRecord }: Props) {
     setOrder(null);
     setResult(null);
     setCard(null);
+    setTeamCard(emptyTeamCard());
+    setTeamBilling({ name: "", line1: "", city: "", state: "", postal_code: "", country: "US" });
     setAddr(null);
     setSession("");
     setError(null);
@@ -111,30 +123,35 @@ export function OrderNew({ onRecord }: Props) {
     const key = result.publishable_key;
     void (async () => {
       try {
-        await loadStripe();
+        await loadStripe(result.plan === "team" ? "v3" : "basil");
         if (!window.Stripe) throw new Error("Stripe.js 不可用");
-        const outcome = await window.Stripe(key).handleNextAction?.({ clientSecret: secret });
+        const stripe = window.Stripe(key);
+        if (!stripe.handleNextAction) throw new Error("Stripe.js 未提供验证方法，请打开官方结账页完成验证");
+        const outcome = await stripe.handleNextAction({ clientSecret: secret });
         if (outcome?.error) throw new Error(outcome.error.message || "3DS 验证失败");
         // 3DS 验证通过即视为扣款成功：直接按已支付交付，订阅查询只作附带信息。
         const paid = outcome?.paymentIntent?.status === "succeeded";
-        let latest = await verifyOrder(id, paid);
-        for (let i = 0; i < 10 && !paid && !isSettled(latest.status) && !latest.subscription?.active; i += 1) {
+        const hostedTeam = result.plan === "team";
+        let latest = hostedTeam ? await pollTeam(id) : await verifyOrder(id, paid);
+        for (let i = 0; i < 10 && !isSettled(latest.status) && (hostedTeam || !paid) && !latest.subscription?.active; i += 1) {
           setResult(latest);
           await new Promise((resolve) => window.setTimeout(resolve, 3000));
-          latest = await verifyOrder(id);
+          latest = hostedTeam ? await pollTeam(id) : await verifyOrder(id);
         }
         setResult(latest);
         if (isSettled(latest.status)) onRecord(latest);
       } catch (err) {
         handledSecret.current = "";
         const message = err instanceof Error ? err.message : "3DS 验证失败";
-        setResult((prev) => (prev ? { ...prev, last_error: message } : prev));
+        // Keep the same secret marked as handled; retry requires a new action, not a render loop.
+        handledSecret.current = secret;
+        setResult((prev) => (prev ? { ...prev, last_error: `${message}；可打开官方结账页完成验证后查询。` } : prev));
       }
     })();
   }, [result, onRecord]);
 
   // 支付已提交但订阅还没确认（verifying）：自动重查，避免页面一直转圈。
-  const verifyingId = result && result.status === "verifying" ? result.id : "";
+  const verifyingId = result && result.plan !== "team" && result.status === "verifying" ? result.id : "";
   useEffect(() => {
     if (!verifyingId) return;
     let stopped = false;
@@ -160,6 +177,24 @@ export function OrderNew({ onRecord }: Props) {
     };
   }, [verifyingId, onRecord]);
 
+  const teamPendingId = result?.plan === "team" && ["paying", "requires_action", "unknown", "verifying"].includes(result.status) ? result.id : "";
+  useEffect(() => {
+    if (!teamPendingId) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const update = async () => {
+      try {
+        const latest = await pollTeam(teamPendingId);
+        if (stopped) return;
+        setResult(latest);
+        if (isSettled(latest.status)) { onRecord(latest); return; }
+      } catch { /* The confirm is never replayed after a poll failure. */ }
+      if (!stopped) timer = window.setTimeout(update, 4000);
+    };
+    timer = window.setTimeout(update, 4000);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [teamPendingId, onRecord]);
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
@@ -171,7 +206,7 @@ export function OrderNew({ onRecord }: Props) {
           return;
         }
         if (!country) {
-          setError("请先选择和 session 导出国家相同的地区。");
+          setError("请先选择创建结账的地区。");
           return;
         }
         if (plan === "team" && (!Number.isInteger(team.seats) || team.seats < 2)) {
@@ -192,14 +227,16 @@ export function OrderNew({ onRecord }: Props) {
           throw new Error("结账已创建，但没有拿到 Stripe 公钥，无法加载安全输入框。");
         }
         setOrder(created);
-        setAddr({
-          name: created.billing?.name ?? "",
-          line1: created.billing?.line1 ?? "",
-          city: created.billing?.city ?? "",
-          state: created.billing?.state ?? "",
-          postal_code: created.billing?.postal_code ?? "",
-          country: created.billing?.country ?? created.billing_country,
-        });
+        if (plan !== "team") {
+          setAddr({
+            name: created.billing?.name ?? "",
+            line1: created.billing?.line1 ?? "",
+            city: created.billing?.city ?? "",
+            state: created.billing?.state ?? "",
+            postal_code: created.billing?.postal_code ?? "",
+            country: created.billing?.country ?? created.billing_country,
+          });
+        }
         setSession("");
         return;
       }
@@ -213,21 +250,37 @@ export function OrderNew({ onRecord }: Props) {
         }
         return;
       }
-      if (!card) {
+      if (!teamOrder && !card) {
         setError("Stripe 安全输入框还没准备好，请稍等几秒再试。");
         return;
       }
-      if (!addr || !addr.name.trim() || !addr.line1.trim() || !addr.city.trim() || !addr.postal_code.trim()) {
+      const billing = teamOrder ? teamBilling : addr;
+      if (!billing || !billing.name.trim() || !billing.line1.trim() || !billing.city.trim() || !billing.postal_code.trim()) {
         setError("请填写完整账单地址（姓名、街道、城市、邮编）。");
         return;
       }
-      const token = await card.tokenize(addr);
+      if (teamOrder && billing.country === "US" && !billing.state.trim()) {
+        setError("请填写账单地址的州。");
+        return;
+      }
+      let teamConfirm;
+      let token: string;
+      if (teamOrder) {
+        const prepared = await prepareTeam(order.id, billing);
+        setOrder(prepared.order);
+        token = await createTeamPaymentMethod(prepared.context.publishable_key, teamCard, billing, prepared.context);
+        const captcha = await hostedCaptcha(prepared.context);
+        teamConfirm = { team_context_id: prepared.context.context_id, passive_captcha_token: captcha || undefined };
+        setTeamCard(emptyTeamCard());
+      } else {
+        token = await card!.tokenize(billing);
+      }
       try {
-        finish(await payOrder(order.id, token, addr));
+        finish(await payOrder(order.id, token, billing, teamConfirm));
       } catch (err) {
         const message = err instanceof Error ? err.message : "开通失败";
         const latest = await getOrder(order.id).catch(() => order);
-        finish({ ...latest, status: isSettled(latest.status) ? latest.status : "failed", last_error: message });
+        finish({ ...latest, status: isSettled(latest.status) ? latest.status : "unknown", last_error: message });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "开通失败");
@@ -236,10 +289,27 @@ export function OrderNew({ onRecord }: Props) {
     }
   }
 
+  const errorAlert = error && step < 2 ? (
+    <Alert mt="md" color="red" variant="light" icon={<IconAlertCircle size={18} />} role="alert">
+      {error}
+    </Alert>
+  ) : null;
+  const primaryAction = step < 2 ? (
+    <Group mt={teamOrder ? "xs" : "md"} justify="flex-end">
+      <Button type="submit" size="md" loading={busy}
+        disabled={Boolean(order && !linkOnly && !teamOrder && !card)} fullWidth={teamOrder}>
+        {!order
+          ? plan === "team" ? `生成 Team 结账链接（${team.seats} 席）` : "创建结账"
+          : linkOnly ? "我已支付，查询订阅" : "确认支付"}
+      </Button>
+    </Group>
+  ) : null;
+  const showTeamPayment = teamOrder && step < 2;
+
   return (
     <form onSubmit={submit}>
-      <div className="order-layout">
-        <Paper withBorder p="lg" radius="md">
+      <div className={`order-layout${showTeamPayment ? " order-layout--team" : ""}`}>
+        <Paper className="order-main" withBorder p="lg" radius="md">
           <Stepper active={step} size="sm" mb="lg" allowNextStepsSelect={false}>
             <Stepper.Step label="配置订单" description="session、套餐、地区" />
             <Stepper.Step label={linkOnly ? "长链支付" : "填卡支付"} description={linkOnly ? "打开链接付款" : "地址与卡片"} />
@@ -247,12 +317,15 @@ export function OrderNew({ onRecord }: Props) {
           </Stepper>
 
           {step === 0 && (
-            <Stack gap="lg">
+            <Stack gap={teamOrder ? "md" : "lg"}>
               <SessionField value={session} onChange={setSession} team={plan === "team"} disabled={busy} />
               <PlanPicker
+                compact={teamOrder}
                 plan={plan}
                 onPlan={(next) => {
                   setPlan(next);
+                  if (next === "team" && !country) setCountry("EG");
+                  if (next !== "team") setTeamCard(emptyTeamCard());
                   if (next !== "plus") {
                     setPromo(null);
                     setPromoCampaignId("");
@@ -326,10 +399,10 @@ export function OrderNew({ onRecord }: Props) {
             </Stack>
           )}
 
-          {step === 1 && order && linkOnly && (
+          {step === 1 && order && hosted && (
             <Stack gap="md">
               <Alert color="green" variant="light" icon={<IconCheck size={18} />} title="结账已创建">
-                这次没拿到 Stripe 公钥，只能打开长链付款。付完回到这里点「我已支付，查询订阅」。
+                Team 官方付款链接已生成，可打开页面完成付款。金额、折扣和税费以官方结账页为准，付款后回到本页查询订阅。
               </Alert>
               <Code block style={{ wordBreak: "break-all", whiteSpace: "pre-wrap" }}>
                 {order.checkout_url}
@@ -356,11 +429,29 @@ export function OrderNew({ onRecord }: Props) {
                     </Button>
                   )}
                 </CopyButton>
+                {!linkOnly && (
+                  <Button type="button" variant="default" loading={busy} onClick={async () => {
+                    setBusy(true);
+                    setError(null);
+                    try {
+                      const checked = await verifyOrder(order.id);
+                      setOrder(checked);
+                      if (checked.subscription?.active || SUCCESS_STATUSES.includes(checked.status)) finish(checked);
+                      else setError(checked.last_error || "订阅尚未生效，请稍后再查询。");
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "查询订阅失败");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}>
+                    我已支付，查询订阅
+                  </Button>
+                )}
               </Group>
             </Stack>
           )}
 
-          {step === 1 && order && !linkOnly && addr && (
+          {step === 1 && order && !teamOrder && !linkOnly && addr && (
             <Stack gap="lg">
               {hosted && (
                 <Alert color="blue" variant="light">
@@ -393,31 +484,17 @@ export function OrderNew({ onRecord }: Props) {
 
           {step === 2 && result && <ResultPanel order={result} onReset={reset} />}
 
-          {error && step < 2 && (
-            <Alert mt="md" color="red" variant="light" icon={<IconAlertCircle size={18} />} role="alert">
-              {error}
-            </Alert>
-          )}
-
-          {step < 2 && (
-            <Group mt="lg" justify="flex-end">
-              <Button
-                type="submit"
-                size="md"
-                loading={busy}
-                disabled={Boolean(order && !linkOnly && !card)}
-              >
-                {!order
-                  ? plan === "team"
-                    ? `创建 Team 结账（${team.seats} 席）`
-                    : "创建结账"
-                  : linkOnly
-                    ? "我已支付，查询订阅"
-                    : "确认支付"}
-              </Button>
-            </Group>
-          )}
+          {!showTeamPayment && errorAlert}
+          {!showTeamPayment && primaryAction}
         </Paper>
+
+        {showTeamPayment && (
+          <div className="order-payment">
+            <TeamPaymentPanel card={teamCard} onCard={setTeamCard}
+              billing={teamBilling} onBilling={setTeamBilling} order={order} busy={busy}
+              footer={<>{errorAlert}{primaryAction}</>} />
+          </div>
+        )}
 
         <div className="order-side">
           <OrderSummary plan={plan} country={country} order={order} seats={team.seats} />

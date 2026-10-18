@@ -30,9 +30,10 @@ interface Props {
   team: TeamValues;
   onTeam: (team: TeamValues) => void;
   disabled?: boolean;
+  compact?: boolean;
 }
 
-export function PlanPicker({ plan, onPlan, country, onCountry, team, onTeam, disabled }: Props) {
+export function PlanPicker({ plan, onPlan, country, onCountry, team, onTeam, disabled, compact = false }: Props) {
   const family = familyOf(plan);
 
   function pickFamily(id: string) {
@@ -44,7 +45,7 @@ export function PlanPicker({ plan, onPlan, country, onCountry, team, onTeam, dis
   }
 
   return (
-    <Stack gap="md">
+    <Stack gap={compact ? "sm" : "md"}>
       <Radio.Group label="套餐" value={family} onChange={pickFamily}>
         <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs" mt="xs">
           {FAMILIES.map((item) => (
@@ -84,8 +85,10 @@ export function PlanPicker({ plan, onPlan, country, onCountry, team, onTeam, dis
       )}
 
       <Select
-        label="地区"
-        description="必须和 session 导出国家一致。"
+        label={family === "team" ? "创建结账地区" : "地区"}
+        description={family === "team"
+          ? "决定结账币种；可选择埃及（EG / EGP），支付账单国家单独填写。"
+          : "用于创建结账并对齐出口代理。"}
         placeholder="请选择"
         searchable
         withAsterisk
@@ -96,7 +99,7 @@ export function PlanPicker({ plan, onPlan, country, onCountry, team, onTeam, dis
       />
 
       {family === "team" && (
-        <Paper withBorder p="md" radius="md">
+        <Paper withBorder p={compact ? "sm" : "md"} radius="md">
           <Stack gap="sm">
             <NumberInput
               label="席位（最少 2 人）"

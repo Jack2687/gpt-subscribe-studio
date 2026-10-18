@@ -1085,6 +1085,19 @@ class ChatGPTClient:
         )
         return payload
 
+    def confirm_team_hosted_checkout(
+        self, *, checkout_session_id: str, publishable_key: str,
+        payment_method: str, checkout_url: str = "",
+        billing: Optional[Dict[str, str]] = None, currency: str = "",
+    ) -> Dict[str, Any]:
+        """Compatibility entry; Team API prepares context before creating PaymentMethod."""
+        from .hosted import TeamHostedClient
+        hosted = TeamHostedClient(self)
+        context = hosted.prepare(session_id=public_checkout_id(checkout_session_id), key=publishable_key,
+                                 billing=dict(billing or {}), currency=currency,
+                                 browser_locale=self.language, browser_timezone=self.timezone)
+        return hosted.confirm(context, payment_method)
+
     def confirm_stripe_custom_checkout(
         self,
         *,
@@ -1628,24 +1641,20 @@ def checkout_confirm_message(payload: Dict[str, Any]) -> str:
     return ""
 
 
-def checkout_confirm_blocked_advice(country: str = "") -> str:
-    code = str(country or "").strip().upper()
-    if code == "US":
-        return (
-            "ChatGPT 未批准这次支付（blocked）。不是发卡行拒卡。"
-            "美国单走美元。若 session 是日本网络/日本刀导出的，不能选美国。"
-            "已被 blocked 的同一条 session 换国家再付一次通常仍会 blocked，需要重新导出后再开一单。"
-        )
-    if code == "JP":
-        return (
-            "ChatGPT 未批准这次支付（blocked）。不是发卡行拒卡。"
-            "日本地区已按日元结账，但这个账号或设备仍被风控。"
-            "同一条已 blocked 的 session 再付一次没用，请在日本网络重新导出整段 session，地区继续选日本。"
-        )
-    return (
-        "ChatGPT 未批准这次支付（blocked）。不是发卡行拒卡，是账号/地区风控。"
-        "账单国家必须和 session 导出国家一致。已被 blocked 的 session 不要换国家重试，需要新导出。"
-    )
+def checkout_confirm_blocked_advice(
+    country: str = "", *, upstream_reason: str = "", upstream_status: str = "blocked",
+) -> str:
+    """Report an upstream refusal without inferring a card, account or region cause.
+
+    ``country`` is retained for call compatibility; country alone is not evidence.
+    """
+    status = str(upstream_status or "blocked").strip().lower()
+    if status not in _CONFIRM_BLOCKED:
+        status = "blocked"
+    reason = redact_sensitive(str(upstream_reason or "").strip())
+    if reason:
+        return f"ChatGPT 未批准本次结账（{status}）。上游信息：{reason}。尚未确认扣款，请先核对账单。"
+    return f"ChatGPT 未批准本次结账（{status}），上游未提供明确原因。尚未确认扣款，请先核对账单。"
 
 
 def payment_intent_from_confirm(payload: Dict[str, Any]) -> tuple[str, str, str]:

@@ -100,6 +100,9 @@ class PaymentRequest:
     publishable_key: Optional[str] = None
     billing: Optional[Dict[str, str]] = None
     plan: Optional[str] = None
+    team_context: Optional[Dict[str, Any]] = None
+    passive_captcha_token: Optional[str] = None
+    rv_timestamp: Optional[str] = None
 
 
 @dataclass(frozen=True)

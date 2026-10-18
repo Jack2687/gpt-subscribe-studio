@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from gss_contracts import AdapterCapabilities, PaymentRequest, PaymentResult, PaymentStatus
 from gss_contracts.errors import DomainError, ErrorCode
 from gss_core.billing import address_for
+from gss_core.hosted import TeamHostedClient
 from gss_core.chatgpt import (
     APP_BASE,
     ChatGPTClient,
@@ -91,6 +93,11 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
         client.timeout = float(self.timeout)
         client.language = locale_for(req.country)
         client.timezone = timezone_for(req.country)
+        if str(req.plan or "").lower() == "team" and public_checkout_id(checkout_id).startswith("cs_"):
+            try:
+                return await asyncio.to_thread(self._pay_team, client, req)
+            finally:
+                client.close()
         page_url = req.checkout_url if str(req.checkout_url or "").startswith(APP_BASE) else f"{APP_BASE}/"
         # 支付阶段出口同样已对齐账单国：先刷新 session 再 warmup，
         # 让确认请求的 cookie/凭证与本批次出口同批次。软失败不阻断。
@@ -106,46 +113,17 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
         billing = dict(req.billing or address_for(req.country))
         checkout_id = public_checkout_id(checkout_id)
         stripe_custom = checkout_id.startswith("cs_")
-        # Team 托管长链也是 cs_ 会话：同样走 Stripe payment_pages 确认，但审批不经
-        # chatgpt.com 后端（长链页面本身不调 approve），approve 被拒时改用轮询等待。
-        hosted = str(req.plan or "").strip().lower() == "team"
         for attempt in range(_APPROVAL_RETRIES + 1):
-            confirm_token = _confirmation_token(
-                client, publishable_key=pk, token=req.payment_method_token or ""
-            )
+            confirm_token = _confirmation_token(client, publishable_key=pk, token=req.payment_method_token or "")
             confirmed = client.confirm_checkout(
-                checkout_session_id=checkout_id,
-                confirm_token=confirm_token,
-                checkout_url=page_url,
-                billing=billing,
-                currency=currency_for(req.country),
-                publishable_key=pk,
+                checkout_session_id=checkout_id, confirm_token=confirm_token, checkout_url=page_url,
+                billing=billing, currency=currency_for(req.country), publishable_key=pk,
             )
             if stripe_custom:
-                try:
-                    confirmed = client.finalize_stripe_custom_checkout(
-                        checkout_session_id=checkout_id,
-                        publishable_key=pk,
-                        checkout_url=page_url,
-                        processor_entity=_processor_from_checkout_url(page_url),
-                        confirmed=confirmed,
-                    )
-                except DomainError as exc:
-                    if not (hosted and checkout_requires_approval(confirmed)):
-                        raise
-                    logger.warning(
-                        "hosted approve 失败，改为轮询等待: %s",
-                        redact_sensitive(str(exc))[:200],
-                    )
-                    confirmed = (
-                        client.poll_payment_page(
-                            checkout_session_id=checkout_id,
-                            publishable_key=pk,
-                            attempts=4,
-                            interval=1.0,
-                        )
-                        or confirmed
-                    )
+                confirmed = client.finalize_stripe_custom_checkout(
+                    checkout_session_id=checkout_id, publishable_key=pk, checkout_url=page_url,
+                    processor_entity=_processor_from_checkout_url(page_url), confirmed=confirmed,
+                )
             if attempt < _APPROVAL_RETRIES and _approval_retryable(confirmed):
                 logger.warning("checkout_approval_internal_error 无 PaymentIntent，重试 %s/%s", attempt + 1, _APPROVAL_RETRIES)
                 continue
@@ -155,11 +133,13 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
         kind = str(confirmed.get("type") or "")
         if checkout_confirm_blocked(confirmed):
             extra = checkout_confirm_message(confirmed)
-            advice = checkout_confirm_blocked_advice(req.country)
+            advice = checkout_confirm_blocked_advice(
+                req.country, upstream_reason=extra, upstream_status=chatgpt_status,
+            )
             return PaymentResult(
                 status=PaymentStatus.DECLINED,
                 provider_ref=intent_id or checkout_id,
-                message=f"{extra}。{advice}" if extra else advice,
+                message=advice,
             )
         state = submission_state(confirmed)
         if state in {"failed", "declined", "canceled", "cancelled"}:
@@ -231,6 +211,50 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
             provider_ref=intent_id or checkout_id,
             message=f"未知支付状态: {chatgpt_status or state or 'empty'}",
         )
+
+
+    def _pay_team(self, client: ChatGPTClient, req: PaymentRequest) -> PaymentResult:
+        if not req.publishable_key:
+            raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少 Stripe 公钥，请打开官方长链")
+        hosted = TeamHostedClient(client)
+        context = req.team_context
+        if not context:
+            raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "请先初始化 Team Hosted Checkout")
+        confirmed = hosted.confirm(context, req.payment_method_token or "",
+                                   passive_captcha_token=req.passive_captcha_token or "",
+                                   rv_timestamp=req.rv_timestamp or "")
+        result = hosted_payment_result(confirmed, context["session_id"], req.checkout_url)
+        if result.status is PaymentStatus.PROCESSING:
+            polled = hosted.poll(session_id=context["session_id"], key=context["publishable_key"])
+            result = hosted_payment_result(polled, context["session_id"], req.checkout_url)
+        return result
+
+
+def hosted_payment_result(payload: dict, session_id: str, checkout_url: str = ""):
+    from gss_contracts import PaymentResult, PaymentStatus
+    from gss_core.chatgpt import _intent_object, payment_intent_from_confirm
+    object_status = str(payload.get("payment_object_status") or "").lower()
+    state = str(payload.get("state") or "").lower()
+    status = str(payload.get("status") or "").lower()
+    intent = _intent_object(payload)
+    intent_id, secret, _ = payment_intent_from_confirm(payload)
+    if object_status == "succeeded" or state == "succeeded" or intent.get("status") == "succeeded" or payload.get("payment_status") == "paid":
+        return PaymentResult(status=PaymentStatus.SUCCEEDED, provider_ref=intent_id or session_id, message="支付成功")
+    if intent.get("status") == "requires_action":
+        next_action = intent.get("next_action") or {}
+        sdk = next_action.get("use_stripe_sdk") or {}
+        kind = str(sdk.get("type") or next_action.get("type") or "")
+        result = _result_from_intent(intent, intent_id, secret)
+        action = dict(result.next_action or {})
+        action["challenge_type"] = kind
+        action["checkout_url"] = checkout_url
+        return PaymentResult(status=PaymentStatus.REQUIRES_ACTION, provider_ref=intent_id or session_id,
+                             next_action=action, message="需要完成 Stripe 验证" if kind == "intent_confirmation_challenge" else "需要完成支付验证")
+    if object_status in {"failed", "canceled", "expired"} or state in {"failed", "canceled", "expired"} or status == "expired":
+        return PaymentResult(status=PaymentStatus.DECLINED, provider_ref=intent_id or session_id, message="Hosted Checkout 支付未完成")
+    if intent.get("status") in {"requires_payment_method", "canceled"} or intent.get("last_payment_error"):
+        return _result_from_intent(intent, intent_id, secret)
+    return PaymentResult(status=PaymentStatus.PROCESSING, provider_ref=intent_id or session_id, message="Stripe 正在处理，请等待状态确认")
 
 
 def _confirmation_token(client: ChatGPTClient, *, publishable_key: str, token: str) -> str:

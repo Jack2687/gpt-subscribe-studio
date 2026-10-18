@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from gss_contracts import (
     AccountAdapter,
@@ -105,6 +105,9 @@ class OrderPipeline:
         publishable_key: Optional[str] = None,
         billing: Optional[Dict[str, str]] = None,
         plan: Optional[str] = None,
+        team_context: Optional[Dict[str, Any]] = None,
+        passive_captcha_token: Optional[str] = None,
+        rv_timestamp: Optional[str] = None,
     ) -> PaymentResult:
         """阶段二：卡支付。按 ``card_source`` 校验必备入参（凭证只在此处入参传递）。"""
 
@@ -127,8 +130,8 @@ class OrderPipeline:
             session=session,
             checkout_session_id=checkout_session_id,
             publishable_key=publishable_key,
-            billing=billing,
-            plan=plan,
+            billing=billing, plan=plan, team_context=team_context,
+            passive_captcha_token=passive_captcha_token, rv_timestamp=rv_timestamp,
         )
         return await self.deps.payment.pay(req)
 

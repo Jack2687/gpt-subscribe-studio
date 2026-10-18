@@ -27,6 +27,7 @@ type Props = {
   confirmReturnUrl?: string | null;
   /** 带优惠活动的订单：上游要求新卡显式给出保存选择。 */
   requireSaveChoice?: boolean;
+  requirePaymentMethod?: boolean;
   onReady: (handle: StripeCardHandle | null) => void;
 };
 
@@ -57,6 +58,7 @@ export function StripeCardFields({
   checkoutUrl,
   confirmReturnUrl,
   requireSaveChoice = false,
+  requirePaymentMethod = false,
   onReady,
 }: Props) {
   const onReadyRef = useRef(onReady);
@@ -92,7 +94,7 @@ export function StripeCardFields({
             },
           },
         };
-        if (requireSaveChoice) options.paymentMethodCreation = "manual";
+        if (requireSaveChoice || requirePaymentMethod) options.paymentMethodCreation = "manual";
         if (customerSessionClientSecret) {
           options.customerSessionClientSecret = customerSessionClientSecret;
         }
@@ -109,7 +111,7 @@ export function StripeCardFields({
             if (submitted?.error) {
               throw new Error(submitted.error.message || "请检查卡片信息");
             }
-            if (!requireSaveChoice) {
+            if (!requireSaveChoice && !requirePaymentMethod) {
               if (typeof stripe.createConfirmationToken !== "function") {
                 throw new Error("当前 Stripe.js 不支持 confirmation token，请刷新页面重试");
               }
@@ -160,6 +162,7 @@ export function StripeCardFields({
             if (pm.error || !pm.paymentMethod?.id) {
               throw new Error(pm.error?.message ?? "创建支付方式失败");
             }
+            if (requirePaymentMethod) return pm.paymentMethod.id;
             const form = new URLSearchParams({
               payment_method: pm.paymentMethod.id,
               setup_future_usage: "off_session",
@@ -199,7 +202,7 @@ export function StripeCardFields({
       onReadyRef.current(null);
       paymentEl?.unmount();
     };
-  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl, requireSaveChoice]);
+  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl, requireSaveChoice, requirePaymentMethod]);
 
   return (
     <>
@@ -336,9 +339,10 @@ function avoidDualStripeVersion(): void {
   };
 }
 
-export function loadStripe(): Promise<void> {
+export function loadStripe(source: "basil" | "v3" = "basil"): Promise<void> {
   avoidDualStripeVersion();
   if (window.Stripe) return Promise.resolve();
+  if (source === "v3") return loadScript("https://js.stripe.com/v3/");
   return loadScript("https://js.stripe.com/basil/stripe.js").catch(() =>
     loadScript("https://js.stripe.com/v3/"),
   );

@@ -4,11 +4,59 @@
   gap: var(--mantine-spacing-lg);
   align-items: start;
 }
+.order-main,
+.order-payment,
+.order-side {
+  min-width: 0;
+}
 @media (min-width: 62em) {
   .order-layout {
     grid-template-columns: minmax(0, 1fr) 320px;
   }
   .order-side {
+    position: sticky;
+    top: var(--mantine-spacing-lg);
+  }
+}
+
+/* Team: AT and order settings | card and billing | order summary. */
+@media (min-width: 48em) {
+  .studio-container:has(.order-layout--team) {
+    max-width: 1440px;
+  }
+  .order-layout--team {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--mantine-spacing-md);
+  }
+  .order-layout--team .order-side {
+    grid-column: 1 / -1;
+    position: static;
+  }
+  .order-layout--team .mantine-Stepper-stepDescription {
+    display: none;
+  }
+  .order-layout--team .mantine-Stepper-stepBody {
+    margin-inline-start: 6px;
+  }
+  .order-layout--team .mantine-Stepper-stepIcon {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    font-size: 12px;
+  }
+  .order-layout--team .mantine-Stepper-stepLabel {
+    font-size: 12px;
+  }
+  .order-layout--team .mantine-Stepper-separator {
+    margin-inline: 6px;
+  }
+}
+@media (min-width: 75em) {
+  .order-layout--team {
+    grid-template-columns: minmax(350px, 1fr) minmax(390px, 1.15fr) 260px;
+  }
+  .order-layout--team .order-side {
+    grid-column: auto;
     position: sticky;
     top: var(--mantine-spacing-lg);
   }

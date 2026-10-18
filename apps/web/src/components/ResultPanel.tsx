@@ -46,11 +46,12 @@ export function ResultPanel({ order, onReset }: Props) {
           {order.subscription.expires_at ? `到期时间 ${order.subscription.expires_at}` : "订阅已经生效。"}
         </Alert>
       )}
-      {order.next_action?.url && (
-        <Alert color="yellow" variant="light" title="需要完成验证">
-          <Anchor href={order.next_action.url} target="_blank" rel="noreferrer">
-            打开 3DS 验证页面
+      {(order.next_action?.url || order.next_action?.checkout_url || (order.plan === "team" && order.checkout_url && !success && !failed)) && (
+        <Alert color="yellow" variant="light" title={order.next_action?.challenge_type === "intent_confirmation_challenge" ? "需要完成 Stripe 验证" : "支付验证与状态确认"}>
+          <Anchor href={order.next_action?.url || order.next_action?.checkout_url || order.checkout_url || "#"} target="_blank" rel="noreferrer">
+            {order.next_action?.url ? "打开支付验证页面" : "打开官方结账页完成验证"}
           </Anchor>
+          {order.plan === "team" && <Text size="xs">页面会自动查询 Stripe Hosted 支付结果，请勿重复提交付款。</Text>}
         </Alert>
       )}
       {order.last_error && !success && (

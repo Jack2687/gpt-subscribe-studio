@@ -18,8 +18,8 @@ export function SessionField({ value, onChange, team, disabled }: Props) {
       }
       placeholder='{"accessToken": "…"}'
       autosize
-      minRows={4}
-      maxRows={10}
+      minRows={team ? 3 : 4}
+      maxRows={team ? 6 : 10}
       value={value}
       onChange={(event) => onChange(event.currentTarget.value)}
       disabled={disabled}

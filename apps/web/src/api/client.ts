@@ -19,7 +19,7 @@ export interface Order {
     country?: string;
   } | null;
   last_error?: string | null;
-  next_action?: { type?: string; url?: string | null; client_secret?: string | null } | null;
+  next_action?: { type?: string; url?: string | null; client_secret?: string | null; challenge_type?: string; checkout_url?: string } | null;
   subscription?: { active: boolean; expires_at?: string | null; channel?: string | null } | null;
   checkout_kind?: string | null;
   seat_quantity?: number | null;
@@ -102,6 +102,7 @@ export async function checkPromoEligibility(session: string): Promise<PromoEligi
 }
 
 export interface BillingInput {
+  email?: string;
   name: string;
   line1: string;
   city: string;
@@ -110,15 +111,55 @@ export interface BillingInput {
   country: string;
 }
 
+export interface TeamHostedContext {
+  context_id: string;
+  session_id: string;
+  publishable_key: string;
+  eid: string;
+  amount_minor: number;
+  currency: string;
+  checkout_config_id: string;
+  elements_session_id: string;
+  client_session_id: string;
+  guid: string;
+  muid: string;
+  sid: string;
+  customer_email?: string;
+  passive_captcha?: { site_key?: string; rqdata?: string | null; token_timeout_seconds?: number };
+}
+
+export async function prepareTeam(orderId: string, billing: BillingInput): Promise<{ order: Order; context: TeamHostedContext }> {
+  const res = await fetch(`/api/orders/${orderId}/team/prepare`, {
+    method: "POST", headers: jsonHeaders,
+    body: JSON.stringify({ billing, browser_locale: navigator.language || "en-US",
+      browser_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" }),
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}
+
+export async function pollTeam(orderId: string): Promise<Order> {
+  const res = await fetch(`/api/orders/${orderId}/team/poll`, { method: "POST" });
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}
+
+export interface TeamConfirmOptions {
+  team_context_id: string;
+  passive_captcha_token?: string;
+  rv_timestamp?: string;
+}
+
 export async function payOrder(
   orderId: string,
   paymentMethodToken: string,
   billing?: BillingInput,
+  team?: TeamConfirmOptions,
 ): Promise<Order> {
   const res = await fetch(`/api/orders/${orderId}/pay`, {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ payment_method_token: paymentMethodToken, billing }),
+    body: JSON.stringify({ payment_method_token: paymentMethodToken, billing, ...team }),
   });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as Order;

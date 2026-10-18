@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """发布前敏感信息检查（宪法第 VI 条 / tasks.md T014）。
 
-扫描仓库中被版本控制的文本文件，找出疑似泄漏的：
+扫描 Git 已跟踪文件及未被忽略的新增文本文件，找出疑似泄漏的：
 - 完整信用卡号（含 Luhn 校验，降低误报）
 - OpenAI / 通用 API key
 - 带真实口令的代理 URL
@@ -36,7 +36,7 @@ SKIP_DIR_PREFIXES = (
 )
 TEXT_SUFFIXES = {
     ".py", ".md", ".json", ".yaml", ".yml", ".toml", ".txt", ".env", ".cfg", ".ini",
-    ".ts", ".tsx", ".js", ".jsx", ".sh", ".ps1", ".sql", ".example",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".sh", ".ps1", ".sql", ".example",
 }
 
 #: 占位符白名单（示例配置里的假值不应报警）。
@@ -79,19 +79,17 @@ def _is_placeholder(line: str) -> bool:
 
 
 def _tracked_files(root: Path) -> List[Path]:
-    """优先用 git 跟踪列表；不是 git 仓库时退回遍历目录。"""
+    """Scan tracked and addable files; respect Git ignores for private/runtime data."""
 
     try:
         out = subprocess.run(
-            ["git", "ls-files"],
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=root,
             capture_output=True,
             text=True,
             check=True,
         ).stdout
-        files = [root / line for line in out.splitlines() if line.strip()]
-        if files:
-            return files
+        return [root / name for name in sorted(set(out.split("\0"))) if name]
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
     return [

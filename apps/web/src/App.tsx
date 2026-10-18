@@ -19,7 +19,7 @@ export function App() {
   }
 
   return (
-    <Container size={1040} py="xl">
+    <Container size={1040} py="xl" className="studio-container">
       <Group justify="space-between" align="center" mb="lg">
         <div>
           <Title order={2}>gpt-subscribe-studio</Title>

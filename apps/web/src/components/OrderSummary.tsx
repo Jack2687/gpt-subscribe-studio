@@ -9,7 +9,7 @@ export const STATUS_LABELS: Record<string, string> = {
   pending_checkout: "正在生成结账",
   awaiting_payment: "等待支付",
   paying: "支付中",
-  requires_action: "需要 3DS 验证",
+  requires_action: "需要支付验证",
   unknown: "状态待确认",
   verifying: "正在确认订阅",
   active: "订阅已生效",
@@ -46,7 +46,7 @@ export function OrderSummary({ plan, country, order, seats }: Props) {
         </Group>
         <Divider />
         <Row label="套餐" value={planLabel(plan)} />
-        <Row label="地区" value={country ? regionLabel(country) : "未选择"} muted={!country} />
+        <Row label={plan === "team" ? "创建结账地区" : "地区"} value={country ? regionLabel(country) : "未选择"} muted={!country} />
         {plan === "team" && <Row label="席位" value={`${order?.seat_quantity ?? seats ?? "-"} 人`} />}
         <Divider />
         <Group justify="space-between" align="baseline">

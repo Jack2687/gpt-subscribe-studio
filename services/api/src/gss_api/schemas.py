@@ -28,6 +28,7 @@ class OrderCreateRequest(BaseModel):
 
 
 class BillingIn(BaseModel):
+    email: str = Field(default="", max_length=254)
     name: str = Field(min_length=1, max_length=100)
     line1: str = Field(min_length=1, max_length=200)
     city: str = Field(min_length=1, max_length=100)
@@ -39,6 +40,15 @@ class BillingIn(BaseModel):
 class OrderPayRequest(BaseModel):
     payment_method_token: str
     billing: Optional[BillingIn] = None
+    team_context_id: Optional[str] = Field(default=None, max_length=80)
+    passive_captcha_token: Optional[str] = Field(default=None, max_length=20000)
+    rv_timestamp: Optional[str] = Field(default=None, max_length=5000)
+
+
+class TeamPrepareRequest(BaseModel):
+    billing: BillingIn
+    browser_locale: str = Field(default="en-US", max_length=30)
+    browser_timezone: str = Field(default="UTC", max_length=80)
 
 
 class SubscriptionOut(BaseModel):
