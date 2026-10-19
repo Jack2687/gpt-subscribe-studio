@@ -504,6 +504,7 @@ async def _pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
                     TeamHostedClient(client).tokenize,
                     card=payload.card.model_dump(), billing=address,
                     publishable_key=secrets.publishable_key, session_id=secrets.checkout_session_id,
+                    checkout_config_id=context.get("checkout_config_id", ""),
                     device={"guid": context.get("guid", ""), "muid": context.get("muid", ""),
                             "sid": context.get("sid", ""),
                             "client_session_id": context.get("client_session_id", "")},

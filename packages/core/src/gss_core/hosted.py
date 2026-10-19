@@ -174,6 +174,7 @@ class TeamHostedClient:
     def prepare(self, *, session_id: str, key: str, billing: dict[str, str],
                 currency: str, browser_locale: str = "en-US", browser_timezone: str = "UTC",
                 on_quote=None) -> dict:
+        from .chatgpt import expected_amount_minor
         quote = self.quote(session_id=session_id, key=key, billing=billing, currency=currency,
                            browser_locale=browser_locale, browser_timezone=browser_timezone)
         if on_quote:
@@ -195,6 +196,26 @@ class TeamHostedClient:
         elements = self.get("elements/sessions", params)
         logger.info("hosted_phase phase=elements amount_minor=%s currency=%s elapsed=%.2f session_present=%s",
                     amount, code, time.monotonic() - phase_started, bool(elements.get("session_id")))
+        # The elements/sessions call refreshes the server-side checkout configuration.
+        # HAR re-submits the address afterwards, and the payment method + confirm must use
+        # that newest config_id, otherwise Stripe rejects confirm with checkout_confirm_error.
+        if billing:
+            phase_started = time.monotonic()
+            refresh = {"key": key, "eid": eid}
+            for name in ("country", "state", "postal_code", "line1", "city"):
+                value = str(billing.get(name) or "").strip()
+                if value:
+                    refresh[f"tax_region[{name}]"] = value
+            refreshed = self.post(f"payment_pages/{session_id}", refresh)
+            latest_config = str(refreshed.get("config_id") or "")
+            if latest_config:
+                quote["checkout_config_id"] = latest_config
+            refreshed_amount = expected_amount_minor(refreshed)
+            if refreshed_amount is not None:
+                amount = refreshed_amount
+            logger.info("hosted_phase phase=config_refresh config=%s elapsed=%.2f due=%s",
+                        bool(latest_config), time.monotonic() - phase_started, refreshed_amount)
+
         captcha = elements.get("passive_captcha") or {}
         site_key = quote.get("site_key") or captcha.get("site_key")
         rqdata = quote.get("rqdata") or captcha.get("rqdata")
@@ -247,13 +268,14 @@ class TeamHostedClient:
         return self.post(f"payment_pages/{context['session_id']}/confirm", body)
 
     def tokenize(self, *, card: dict, billing: dict[str, str], publishable_key: str,
-                 session_id: str, device: dict[str, str] | None = None,
-                 captcha_token: str = "") -> str:
+                 session_id: str, checkout_config_id: str = "",
+                 device: dict[str, str] | None = None, captcha_token: str = "") -> str:
         """Create a PaymentMethod for this hosted session; return only the pm_ id."""
         from .tokenize import tokenize_card
         return tokenize_card(self.http, card=card, billing=billing, publishable_key=publishable_key,
-                             checkout_session_id=session_id, device=device,
-                             captcha_token=captcha_token)
+                             checkout_session_id=session_id,
+                             checkout_config_id=checkout_config_id,
+                             device=device, captcha_token=captcha_token)
 
     def poll(self, *, session_id: str, key: str) -> dict:
         return self.get(f"payment_pages/{session_id}/poll", {"key": key})

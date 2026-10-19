@@ -34,7 +34,7 @@ class HTTP:
 def test_tokenize_sends_hosted_attribution_from_js_stripe_origin():
     http = HTTP()
     pm = tokenize_card(http, card=card(), billing=BILLING, publishable_key="pk_live_fixture",
-                       checkout_session_id="cs_live_fixture",
+                       checkout_session_id="cs_live_fixture", checkout_config_id="cfg_fixture",
                        device={"guid": "g1", "muid": "m1", "sid": "s1", "client_session_id": "c1"})
     assert pm == "pm_fixture"
     call = http.calls[0]
@@ -46,6 +46,7 @@ def test_tokenize_sends_hosted_attribution_from_js_stripe_origin():
     assert data["client_attribution_metadata[merchant_integration_version]"] == "hosted_checkout"
     assert data["client_attribution_metadata[payment_method_selection_flow]"] == "merchant_specified"
     assert data["client_attribution_metadata[checkout_session_id]"] == "cs_live_fixture"
+    assert data["client_attribution_metadata[checkout_config_id]"] == "cfg_fixture"
     assert data["guid"] == "g1" and data["muid"] == "m1" and data["sid"] == "s1"
     assert data["_stripe_version"] == "2020-08-27;custom_checkout_beta=v1"
     assert "radar_options[hcaptcha_token]" not in data

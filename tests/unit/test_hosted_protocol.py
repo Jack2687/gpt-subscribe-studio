@@ -53,8 +53,8 @@ def context(client):
 def test_hosted_prepare_order_versions_context_and_amount(due):
     client = ChatGPTClient(access_token="fixture"); http = HTTP(due); client._stripe_http = http
     c = context(client)
-    # init, 3 address posts, elements GET, then 4 fingerprint registrations
-    assert [x[0] for x in http.calls] == ["POST"] * 4 + ["GET"] + ["POST"] * 4
+    # init, 3 address posts, elements GET, address refresh, 4 fingerprint registrations
+    assert [x[0] for x in http.calls] == ["POST"] * 4 + ["GET"] + ["POST"] * 5
     assert http.calls[0][2] == {"key": "pk_test_fixture", "eid": "NA", "redirect_type": "url", "browser_locale": "en-US", "browser_timezone": "Asia/Tokyo"}
     assert http.calls[1][2]["tax_region[country]"] == "US"
     assert http.calls[3][2]["tax_region[state]"] == "OR"

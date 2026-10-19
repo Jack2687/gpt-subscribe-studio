@@ -65,6 +65,7 @@ def tokenize_card(
     billing: Dict[str, str],
     publishable_key: str,
     checkout_session_id: str,
+    checkout_config_id: str = "",
     device: Optional[Dict[str, str]] = None,
     captcha_token: str = "",
 ) -> str:
@@ -94,6 +95,7 @@ def tokenize_card(
         "client_attribution_metadata[merchant_integration_source]": "checkout",
         "client_attribution_metadata[merchant_integration_version]": "hosted_checkout",
         "client_attribution_metadata[payment_method_selection_flow]": "merchant_specified",
+        "client_attribution_metadata[checkout_config_id]": checkout_config_id,
         "guid": str(device.get("guid") or ""),
         "muid": str(device.get("muid") or ""),
         "sid": str(device.get("sid") or ""),
