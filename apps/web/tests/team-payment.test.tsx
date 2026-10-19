@@ -3,13 +3,15 @@ import test from "node:test";
 import { MantineProvider } from "@mantine/core";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { pollTeam, type Order, type TeamHostedContext } from "../src/api/client";
+import { quoteTeam, prepareTeam, pollTeam, type Order, type TeamHostedContext } from "../src/api/client";
 import { loadHistory, normalizeHistoryError } from "../src/api/history";
 import { hostedCaptcha } from "../src/card-payment/hostedCaptcha";
 import { TeamPaymentPanel } from "../src/components/TeamPaymentPanel";
+import { emptyTeamCard } from "../src/card-payment/TeamCardForm";
 import { PlanPicker } from "../src/components/PlanPicker";
 import { OrderSummary } from "../src/components/OrderSummary";
-import { createTeamPaymentMethod, emptyTeamCard } from "../src/card-payment/teamPayment";
+import { billingExampleError, randomBillingExample, TAX_FREE_STATES } from "../src/card-payment/billingExamples";
+import { elementPaymentMethod } from "../src/card-payment/stripePaymentMethod";
 
 const billing = { name: "", line1: "", city: "", state: "", postal_code: "", country: "US" };
 const blankOrder: Order = {
@@ -23,91 +25,27 @@ function panel(order: Order | null) {
   );
 }
 
-test("Team card fields render before a checkout exists", () => {
+test("Team panel before checkout reserves space but does not collect raw card fields", () => {
   const html = panel(null);
-  for (const label of ["卡号", "到期月份", "到期年份", "CVC", "Team 账单地址"]) assert.ok(html.includes(label));
   assert.ok(html.includes('data-testid="team-card-form"'));
-  assert.ok(html.includes("先生成结账链接"));
-});
-
-test("Team card fields remain visible when a hosted checkout has no Stripe key", () => {
-  const html = panel(blankOrder);
-  assert.ok(html.includes('data-testid="team-card-form"'));
-  assert.ok(html.includes("尚未取得 Stripe 公钥"));
-});
-
-test("Team panel still displays fields after checkout with a Stripe key", () => {
-  const html = panel({ ...blankOrder, publishable_key: "pk_test_fixture" });
+  assert.ok(html.includes("卡号只用于本次向 Stripe 换取支付标识"));
+  assert.ok(html.includes("Team 账单地址"));
   assert.ok(html.includes('data-testid="team-card-number"'));
-  assert.ok(!html.includes("尚未取得 Stripe 公钥"));
 });
 
-test("Missing Stripe key is reported before sending a request", async () => {
-  await assert.rejects(createTeamPaymentMethod(null, emptyTeamCard(), billing), /Stripe 公钥/);
+test("Team card fields stay available regardless of checkout state", () => {
+  for (const order of [blankOrder, { ...blankOrder, publishable_key: "pk_test_fixture" }]) {
+    const html = panel(order);
+    assert.ok(html.includes('data-testid="team-card-number"'));
+    assert.ok(!html.includes("尚未取得 Stripe 公钥"));
+  }
+  assert.ok(!panel(null).includes('data-testid="stripe-payment-element"'));
 });
 
-test("Team card data goes only to Stripe; only pm_ is returned", async () => {
-  // Synthetic runtime-generated fixture, not a stored payment credential.
-  const card = { number: `${"4"}${"2".repeat(15)}`, exp_month: "12", exp_year: "40", cvc: "123" };
-  const original = globalThis.fetch;
-  const calls: { url: string; init?: RequestInit }[] = [];
-  globalThis.fetch = async (url, init) => {
-    calls.push({ url: String(url), init });
-    return new Response(JSON.stringify({ id: "pm_fixture" }), { status: 200 });
-  };
-  try {
-    const id = await createTeamPaymentMethod("pk_test_fixture", card,
-      { name: "Test", line1: "Fixture Street", city: "Fixture City", state: "OR", postal_code: "00000", country: "US" });
-    assert.equal(id, "pm_fixture");
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "https://api.stripe.com/v1/payment_methods");
-    assert.equal(calls[0].init?.credentials, "omit");
-    const form = calls[0].init?.body as URLSearchParams;
-    assert.equal(form.get("card[number]"), card.number);
-    assert.equal(form.get("card[exp_year]"), "2040");
-    assert.equal(form.get("billing_details[address][country]"), "US");
-  } finally { globalThis.fetch = original; }
-});
-
-
-test("Team creation region and billing country have separate labels", () => {
-  const html = panel({ ...blankOrder, currency: "EGP" });
-  assert.ok(html.includes("支付账单国家"));
-  assert.ok(html.includes("独立于创建结账地区"));
-  assert.ok(!html.includes("需和所选地区一致"));
-  const pricing = renderToStaticMarkup(<MantineProvider><PlanPicker plan="team" country="EG"
-    onPlan={() => {}} onCountry={() => {}} team={{ seats: 2, workspace: "Fixture", promoCode: "", interval: "month" }}
-    onTeam={() => {}} /></MantineProvider>);
-  assert.ok(pricing.includes("创建结账地区"));
-  assert.ok(pricing.includes("EG / EGP"));
-  assert.ok(!pricing.includes("必须和 session 导出国家一致"));
-  const summary = renderToStaticMarkup(<MantineProvider><OrderSummary plan="team" country="EG"
-    order={{ ...blankOrder, currency: "EGP" }} seats={2} /></MantineProvider>);
-  assert.ok(summary.includes("创建结账地区"));
-});
-
-
-test("Prepared Hosted context supplies version, device and checkout attribution", async () => {
-  const card = { number: `${"4"}${"2".repeat(15)}`, exp_month: "12", exp_year: "40", cvc: "123" };
-  const ctx: TeamHostedContext = { context_id: "context_fixture", session_id: "cs_test_fixture", publishable_key: "pk_test_fixture",
-    eid: "NA", amount_minor: 115000, currency: "egp", checkout_config_id: "config_updated", elements_session_id: "elements_fixture",
-    client_session_id: "client_fixture", guid: "guid_fixture", muid: "muid_fixture", sid: "sid_fixture", customer_email: "fixture@example.invalid" };
-  const original = globalThis.fetch;
-  let body: URLSearchParams | undefined;
-  globalThis.fetch = async (_, init) => {
-    body = init?.body as URLSearchParams;
-    return new Response(JSON.stringify({ id: "pm_fixture" }), { status: 200 });
-  };
-  try {
-    await createTeamPaymentMethod("pk_test_fixture", card,
-      { name: "Fixture", line1: "Fixture Street", city: "Fixture", state: "OR", country: "US", postal_code: "00000" }, ctx);
-    assert.equal(body?.get("_stripe_version"), "2020-08-27;custom_checkout_beta=v1");
-    assert.equal(body?.get("guid"), ctx.guid);
-    assert.equal(body?.get("client_attribution_metadata[client_session_id]"), ctx.client_session_id);
-    assert.equal(body?.get("client_attribution_metadata[checkout_config_id]"), ctx.checkout_config_id);
-    assert.equal(body?.get("client_attribution_metadata[merchant_integration_version]"), "hosted_checkout");
-    assert.equal(body?.get("billing_details[email]"), "fixture@example.invalid");
-  } finally { globalThis.fetch = original; }
+test("Team card payload carries only the four card fields", () => {
+  const card = { ...emptyTeamCard(), number: "4242424242424242", cvc: "123", exp_month: "12", exp_year: "2030" };  // release-check: ignore
+  assert.deepEqual(Object.keys(card).sort(), ["cvc", "exp_month", "exp_year", "number"]);
+  assert.equal(emptyTeamCard().number, "");
 });
 
 test("Live captcha widget executes with current site key and rqdata and is removed", async () => {
@@ -157,4 +95,100 @@ test("Legacy blocked history drops unsupported region/card advice but preserves 
     assert.deepEqual(loadHistory(), [{ ...record, error: expected }]);
     assert.equal(JSON.parse(values.get("gss.history.v1"))[0].error, expected);
   } finally { Object.assign(globalThis, { localStorage: original }); }
+});
+
+
+test("Quote route reads amount without card submission or payment confirmation", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNavigator = globalThis.navigator;
+  const calls: {url: string; body: unknown}[] = [];
+  Object.defineProperty(globalThis, "navigator", {value: {language: "en-US"}, configurable: true});
+  globalThis.fetch = async (url, init) => {
+    calls.push({url: String(url), body: JSON.parse(String(init?.body))});
+    return new Response(JSON.stringify({...blankOrder, amount: "1150", currency: "EGP"}), {status: 200});
+  };
+  try {
+    const got = await quoteTeam("fixture");
+    assert.equal(got.amount, "1150");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/api/orders/fixture/team/quote");
+    assert.ok(!JSON.stringify(calls[0].body).includes("card"));
+  } finally {globalThis.fetch = originalFetch; Object.defineProperty(globalThis, "navigator", {value: originalNavigator, configurable: true});}
+});
+
+test("Summary renders quote transport failure instead of suggesting a payment attempt", () => {
+  const order = {...blankOrder, quote_error: "Stripe 初始化结账失败；本步骤未提交付款确认"};
+  const html = renderToStaticMarkup(<MantineProvider><OrderSummary plan="team" country="EG" order={order} seats={2}/></MantineProvider>);
+  assert.ok(html.includes("尚未取得 Stripe 报价"));
+  assert.ok(html.includes("本步骤未提交付款确认"));
+});
+
+
+test("Local example generator produces plausible tax-free US addresses", () => {
+  const current = { ...billing, name: "Actual User", email: "fixture@example.invalid" };
+  const seen = new Set<string>();
+  for (let i = 0; i < 80; i++) {
+    const value = randomBillingExample(current);
+    seen.add(value.state);
+    assert.equal(value.country, "US");
+    assert.ok(TAX_FREE_STATES.includes(value.state), `unexpected state ${value.state}`);
+    assert.ok(value.city.length > 2);
+    assert.match(value.postal_code, /^\d{5}$/);
+    // Real US house number + genuine street name, optional unit suffix.
+    assert.match(value.line1, /^\d{3,4} [A-Za-z0-9][A-Za-z0-9 .\-]*( Apt \d{1,2})?$/);
+    assert.ok(!/\[示例\]|Example Street/i.test(value.line1));
+    assert.equal(value.name, current.name);
+    assert.equal(value.email, current.email);
+  }
+  assert.ok(seen.size >= 4, "should spread across tax-free states");
+});
+
+test("Generated addresses cover every tax-free state", () => {
+  const states = new Set<string>();
+  for (let i = 0; i < 400; i++) states.add(randomBillingExample(billing).state);
+  assert.deepEqual([...states].sort(), [...TAX_FREE_STATES].sort());
+});
+
+test("Unchanged example street is blocked even when confirmation is checked", () => {
+  const example = randomBillingExample(billing, () => 0);
+  assert.match(billingExampleError(example, example, true)!, /替换/);
+  const actual = { ...example, line1: "Fixture Actual Street" };
+  assert.match(billingExampleError(actual, example, false)!, /勾选/);
+  assert.equal(billingExampleError(actual, example, true), null);
+  assert.equal(billingExampleError(actual, null, false), null);
+});
+
+test("Team example controls identify generated data and require address confirmation", () => {
+  const html = renderToStaticMarkup(<MantineProvider><TeamPaymentPanel card={emptyTeamCard()} onCard={() => {}}
+    billing={billing} onBilling={() => {}} order={null} busy={false} onExample={() => {}}
+    hasExample exampleConfirmed={false} onExampleConfirmed={() => {}} /></MantineProvider>);
+  assert.ok(html.includes("随机示例地址"));
+  assert.ok(html.includes("已填充虚构示例"));
+  assert.ok(html.includes("已替换示例并确认是实际账单地址"));
+});
+
+
+test("Quote and prepare deadlines report explicit nonpayment timeout instead of hanging", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNavigator = globalThis.navigator;
+  Object.defineProperty(globalThis, "navigator", {value: {language: "en-US"}, configurable: true});
+  let sawSignal = false;
+  let calls = 0;
+  globalThis.fetch = (_url, init) => {
+    calls += 1;
+    // Quote uses a fixed 25s deadline; fail it immediately here to keep the suite fast.
+    if (calls > 1) return Promise.reject(new Error("fixture quote transport failure"));
+    sawSignal = Boolean(init?.signal);
+    return new Promise((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }) as Promise<Response>;
+  };
+  try {
+    await assert.rejects(prepareTeam("fixture", billing, {timeoutMs: 100}), /超时.*未提交付款确认/);
+    await assert.rejects(quoteTeam("fixture"), /fixture quote transport failure|超时/);
+    assert.ok(sawSignal);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "navigator", {value: originalNavigator, configurable: true});
+  }
 });

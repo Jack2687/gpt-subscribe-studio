@@ -1,10 +1,10 @@
-import { Alert, Paper, Stack, Text } from "@mantine/core";
+import { Alert, Button, Checkbox, Group, Paper, Stack, Text } from "@mantine/core";
 import type { ReactNode } from "react";
 
 import type { BillingInput, Order } from "../api/client";
-import { TeamCardForm } from "../card-payment/TeamCardForm";
-import type { TeamCardDraft } from "../card-payment/teamPayment";
+import { TeamCardForm, type TeamCardDraft } from "../card-payment/TeamCardForm";
 import { BillingForm } from "./BillingForm";
+import { TAX_FREE_STATE_LABEL } from "../card-payment/billingExamples";
 
 interface Props {
   card: TeamCardDraft;
@@ -14,24 +14,34 @@ interface Props {
   order: Order | null;
   busy: boolean;
   footer?: ReactNode;
+  onExample?: () => void;
+  hasExample?: boolean;
+  exampleConfirmed?: boolean;
+  onExampleConfirmed?: (confirmed: boolean) => void;
 }
 
-export function TeamPaymentPanel({ card, onCard, billing, onBilling, order, busy, footer }: Props) {
+export function TeamPaymentPanel({ card, onCard, billing, onBilling, order, busy, footer, onExample, hasExample = false, exampleConfirmed = false, onExampleConfirmed }: Props) {
   return (
     <Paper withBorder p="md" radius="md" className="team-payment-panel">
       <Stack gap="sm">
         <TeamCardForm value={card} onChange={onCard} disabled={busy} />
         <div>
-          <Text fw={600} mb="xs">Team 账单地址</Text>
+          <Group justify="space-between" align="center" mb="xs">
+            <Text fw={600}>Team 账单地址</Text>
+            {onExample && <Button type="button" size="xs" variant="light" disabled={busy} onClick={onExample}>随机示例地址</Button>}
+          </Group>
+          {hasExample && (
+            <Alert color="blue" variant="light" mb="xs" title="已填充虚构示例">
+              免税州〔{TAX_FREE_STATE_LABEL}〕真实城市与街道，门牌号随机；请核对或替换为你的实际账单地址。
+            </Alert>
+          )}
           <BillingForm value={billing} onChange={onBilling} disabled={busy} independentCountry compact />
+          {hasExample && <Checkbox mt="sm" disabled={busy} checked={exampleConfirmed}
+            onChange={(e) => onExampleConfirmed?.(e.currentTarget.checked)}
+            label="已替换示例并确认是实际账单地址" />}
         </div>
         {!order && (
-          <Text size="sm" c="dimmed">先生成结账链接，再确认支付；填写内容会保留。</Text>
-        )}
-        {order && !order.publishable_key && (
-          <Alert color="yellow" title="尚未取得 Stripe 公钥">
-            卡片表单已保留，本次结账请使用下面的官方长链完成付款；不会发送卡片字段。
-          </Alert>
+          <Text size="sm" c="dimmed">填写卡片和账单后点击确认支付；生成结账链接时只读取金额。</Text>
         )}
         {footer}
       </Stack>

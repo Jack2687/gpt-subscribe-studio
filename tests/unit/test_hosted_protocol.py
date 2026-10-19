@@ -53,7 +53,8 @@ def context(client):
 def test_hosted_prepare_order_versions_context_and_amount(due):
     client = ChatGPTClient(access_token="fixture"); http = HTTP(due); client._stripe_http = http
     c = context(client)
-    assert [x[0] for x in http.calls] == ["POST", "POST", "POST", "POST", "GET"]
+    # init, 3 address posts, elements GET, then 4 fingerprint registrations
+    assert [x[0] for x in http.calls] == ["POST"] * 4 + ["GET"] + ["POST"] * 4
     assert http.calls[0][2] == {"key": "pk_test_fixture", "eid": "NA", "redirect_type": "url", "browser_locale": "en-US", "browser_timezone": "Asia/Tokyo"}
     assert http.calls[1][2]["tax_region[country]"] == "US"
     assert http.calls[3][2]["tax_region[state]"] == "OR"
@@ -67,7 +68,8 @@ def test_hosted_prepare_order_versions_context_and_amount(due):
     assert c["checkout_config_id"] == "fixture-config-updated"
     assert c["checkout_config_id"] != fields("elements")["config_id"]
     assert c["passive_captcha"]["rqdata"] == fields("init")["rqdata"]
-    assert all(len(c[k]) == 42 for k in ("guid", "muid", "sid"))
+    # Device ids come from the live fingerprint endpoint or, on failure, local 42-char ids.
+    assert all(isinstance(c[k], str) and c[k] for k in ("guid", "muid", "sid"))
 
 
 def test_hosted_confirm_exact_fields_then_get_poll():
@@ -144,3 +146,64 @@ def test_current_timing_never_fetches_external_or_nonhttps_script():
     client = ChatGPTClient(access_token="fixture"); client._stripe_http = TimingHTTP()
     assert TeamHostedClient(client).current_timing("cs_test_fixture") == ""
     assert calls == ["https://pay.openai.com/c/pay/cs_test_fixture"]
+
+
+def test_quote_does_not_load_elements_captcha_or_confirm():
+    client = ChatGPTClient(access_token="fixture"); http = HTTP(); client._stripe_http = http
+    h = TeamHostedClient(client)
+    result = h.quote(session_id="cs_test_fixture", key="pk_test_fixture", billing=None, currency="EGP")
+    assert result["amount_minor"] == 131100
+    assert len(http.calls) == 1 and http.calls[0][1].endswith("/init")
+
+
+def test_prepare_publishes_quote_before_elements_failure():
+    class ElementsFailure(HTTP):
+        def get(self, url, **kwargs):
+            error = TimeoutError("fixture transport timeout")
+            error.code = 28
+            raise error
+    client = ChatGPTClient(access_token="fixture"); client._stripe_http = ElementsFailure()
+    quotes = []
+    from gss_contracts.errors import DomainError, ErrorCode
+    with pytest.raises(DomainError) as error:
+        TeamHostedClient(client).prepare(session_id="cs_test_fixture", key="pk_test_fixture", billing=ADDRESS,
+                                        currency="EGP", on_quote=quotes.append)
+    assert error.value.code is ErrorCode.CHECKOUT_UPSTREAM_ERROR
+    assert "初始化支付组件" in error.value.message and "未提交付款确认" in error.value.message
+    assert quotes[0]["amount_minor"] == 115000
+
+
+@pytest.mark.parametrize("path,expected_code,fragment", [
+    ("payment_pages/cs_test_fixture/init", "checkout_upstream_error", "初始化结账"),
+    ("payment_pages/cs_test_fixture/confirm", "payment_unknown_state", "扣款结果待确认"),
+])
+def test_transport_failure_distinguishes_prepare_from_confirm(path, expected_code, fragment, caplog):
+    from gss_contracts.errors import DomainError
+    class Failed(HTTP):
+        def post(self, url, **kwargs):
+            e = TimeoutError("sensitive-detail-must-not-log")
+            e.code = 28
+            raise e
+    client = ChatGPTClient(access_token="fixture"); client._stripe_http = Failed()
+    with pytest.raises(DomainError) as caught:
+        TeamHostedClient(client).post(path, {})
+    assert caught.value.code.value == expected_code
+    assert fragment in caught.value.message
+    assert "code=28" in caplog.text and "sensitive-detail-must-not-log" not in caplog.text
+
+
+def test_initialization_reconnects_once_without_changing_proxy_but_confirm_never_retries():
+    from gss_contracts.errors import DomainError
+    class Flaky(HTTP):
+        attempts = 0
+        def post(self, url, **kw):
+            self.attempts += 1
+            if self.attempts == 1: raise TimeoutError("fixture")
+            return SimpleNamespace(status_code=200, json=lambda: {"status": "open"})
+    client = ChatGPTClient(access_token="fixture"); http = Flaky(); client._stripe_http = http
+    h = TeamHostedClient(client)
+    assert h.post("payment_pages/cs_test_fixture/init", {})["status"] == "open"
+    assert http.attempts == 2
+    http.attempts = 0
+    with pytest.raises(DomainError): h.post("payment_pages/cs_test_fixture/confirm", {})
+    assert http.attempts == 1

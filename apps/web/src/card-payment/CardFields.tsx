@@ -3,9 +3,11 @@
  */
 
 import { Alert, Text } from "@mantine/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { elementPaymentMethod } from "./stripePaymentMethod";
 
 export type BillingDetails = {
+  email?: string;
   name?: string;
   line1?: string;
   city?: string;
@@ -28,6 +30,7 @@ type Props = {
   /** 带优惠活动的订单：上游要求新卡显式给出保存选择。 */
   requireSaveChoice?: boolean;
   requirePaymentMethod?: boolean;
+  disabled?: boolean;
   onReady: (handle: StripeCardHandle | null) => void;
 };
 
@@ -59,20 +62,23 @@ export function StripeCardFields({
   confirmReturnUrl,
   requireSaveChoice = false,
   requirePaymentMethod = false,
+  disabled = false,
   onReady,
 }: Props) {
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+  const targetId = `gss-payment-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const [hint, setHint] = useState("正在加载 Stripe 安全输入框…");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    let paymentEl: { mount: (selector: string) => void; unmount: () => void } | null = null;
+    let paymentEl: StripePaymentElement | null = null;
 
     async function mount() {
       try {
-        await loadStripe();
+        setError(null);
+        await loadStripe(requirePaymentMethod ? "v3" : "basil");
         if (cancelled) return;
         if (!window.Stripe) throw new Error("Stripe.js 不可用");
         const stripe = window.Stripe(publishableKey);
@@ -83,8 +89,8 @@ export function StripeCardFields({
           currency: currencyCode,
           amount: Math.max(1, toMinor(amount, currencyCode)),
           setupFutureUsage: "off_session",
-          paymentMethodTypes: ["card", "link"],
-          allowedPaymentMethodTypes: ["card", "link"],
+          paymentMethodTypes: requirePaymentMethod ? ["card"] : ["card", "link"],
+          allowedPaymentMethodTypes: requirePaymentMethod ? ["card"] : ["card", "link"],
           appearance: {
             theme: "stripe",
             variables: {
@@ -102,10 +108,11 @@ export function StripeCardFields({
         paymentEl = elements.create("payment", {
           layout: "tabs",
           wallets: { applePay: "never", googlePay: "never" },
+          ...(requirePaymentMethod ? { fields: { billingDetails: "never" } } : {}),
         });
-        paymentEl.mount("#gss-payment");
+        paymentEl.mount(`#${targetId}`);
         setHint("卡片由 Stripe 托管输入，不会发到本站。");
-        onReadyRef.current({
+        const handle: StripeCardHandle = {
           tokenize: async (billing: BillingDetails) => {
             const submitted = await elements.submit();
             if (submitted?.error) {
@@ -138,33 +145,10 @@ export function StripeCardFields({
               }
               return plain.confirmationToken.id;
             }
-            if (typeof stripe.createPaymentMethod !== "function") {
-              throw new Error("当前 Stripe.js 不支持 createPaymentMethod，请刷新页面重试");
-            }
-            // 新卡必须显式给出保存选择：先建 PaymentMethod（allow_redisplay=always），
-            // 再用它换 ConfirmationToken，否则 checkout/confirm 返回 new_card_save_choice_required。
-            const pm = await stripe.createPaymentMethod({
-              elements,
-              params: {
-                allow_redisplay: "always",
-                billing_details: {
-                  name: billing.name,
-                  address: {
-                    line1: billing.line1,
-                    city: billing.city,
-                    state: billing.state,
-                    postal_code: billing.postal_code,
-                    country: billing.country,
-                  },
-                },
-              },
-            });
-            if (pm.error || !pm.paymentMethod?.id) {
-              throw new Error(pm.error?.message ?? "创建支付方式失败");
-            }
-            if (requirePaymentMethod) return pm.paymentMethod.id;
+            const paymentMethodId = await elementPaymentMethod(stripe, elements, billing, requireSaveChoice);
+            if (requirePaymentMethod) return paymentMethodId;
             const form = new URLSearchParams({
-              payment_method: pm.paymentMethod.id,
+              payment_method: paymentMethodId,
               setup_future_usage: "off_session",
               "client_context[currency]": currencyCode,
               "client_context[mode]": "subscription",
@@ -186,7 +170,18 @@ export function StripeCardFields({
             }
             return body.id;
           },
-        });
+        };
+        const ready = () => {
+          if (!cancelled) { setHint("卡片由 Stripe 托管输入，不会发到本站。"); onReadyRef.current(handle); }
+        };
+        if (paymentEl.on) {
+          paymentEl.on("ready", ready);
+          paymentEl.on("loaderror", (event: { error?: { message?: string } }) => {
+            if (cancelled) return;
+            setError(event.error?.message || "Stripe 输入框加载失败");
+            onReadyRef.current(null);
+          });
+        } else ready();
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : "Stripe 输入框加载失败";
@@ -202,11 +197,13 @@ export function StripeCardFields({
       onReadyRef.current(null);
       paymentEl?.unmount();
     };
-  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl, requireSaveChoice, requirePaymentMethod]);
+  }, [publishableKey, amount, currency, customerSessionClientSecret, checkoutUrl, confirmReturnUrl, requireSaveChoice, requirePaymentMethod, targetId]);
 
   return (
     <>
-      <div id="gss-payment" />
+      <div aria-disabled={disabled} style={disabled ? { pointerEvents: "none", opacity: 0.65 } : undefined}>
+        <div id={targetId} data-testid="stripe-payment-element" />
+      </div>
       {hint && !error && (
         <Text size="xs" c="dimmed" mt="xs">
           {hint}
@@ -221,8 +218,14 @@ export function StripeCardFields({
   );
 }
 
+type StripePaymentElement = {
+  mount: (selector: string) => void;
+  unmount: () => void;
+  on?: (event: string, callback: (...args: any[]) => void) => void;
+};
+
 type StripeElements = {
-  create: (type: string, options?: unknown) => { mount: (selector: string) => void; unmount: () => void };
+  create: (type: string, options?: unknown) => StripePaymentElement;
   submit: () => Promise<{ error?: { message?: string } }>;
 };
 
@@ -348,20 +351,19 @@ export function loadStripe(source: "basil" | "v3" = "basil"): Promise<void> {
   );
 }
 
+const scriptLoads = new Map<string, Promise<void>>();
 function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[data-gss-stripe="${src}"]`);
-    if (existing) {
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error("Stripe.js 加载失败")));
-      return;
-    }
+  const pending = scriptLoads.get(src);
+  if (pending) return pending;
+  const promise = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = src;
     script.async = true;
     script.dataset.gssStripe = src;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Stripe.js 加载失败"));
+    script.onerror = () => { script.remove(); scriptLoads.delete(src); reject(new Error("Stripe.js 加载失败")); };
     document.head.appendChild(script);
   });
+  scriptLoads.set(src, promise);
+  return promise;
 }

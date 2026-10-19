@@ -9,6 +9,7 @@ import {
   isHostedOrder,
   payOrder,
   prepareTeam,
+  quoteTeam,
   pollTeam,
   verifyOrder,
   type BillingInput,
@@ -25,8 +26,8 @@ import { ResultPanel } from "../components/ResultPanel";
 import { SessionField } from "../components/SessionField";
 import { StripeCardFields, loadStripe, type StripeCardHandle } from "../card-payment/CardFields";
 import { TeamPaymentPanel } from "../components/TeamPaymentPanel";
-import { hostedCaptcha } from "../card-payment/hostedCaptcha";
-import { createTeamPaymentMethod, emptyTeamCard } from "../card-payment/teamPayment";
+import { billingExampleError, randomBillingExample } from "../card-payment/billingExamples";
+import { emptyTeamCard, type TeamCardDraft } from "../card-payment/TeamCardForm";
 
 interface Props {
   onRecord: (order: Order) => void;
@@ -46,10 +47,12 @@ export function OrderNew({ onRecord }: Props) {
   const [result, setResult] = useState<Order | null>(null);
   const [addr, setAddr] = useState<BillingInput | null>(null);
   const [card, setCard] = useState<StripeCardHandle | null>(null);
-  const [teamCard, setTeamCard] = useState(emptyTeamCard);
+  const [teamCard, setTeamCard] = useState<TeamCardDraft>(emptyTeamCard);
   const [teamBilling, setTeamBilling] = useState<BillingInput>({
     name: "", line1: "", city: "", state: "", postal_code: "", country: "US",
   });
+  const [teamExample, setTeamExample] = useState<BillingInput | null>(null);
+  const [teamExampleConfirmed, setTeamExampleConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [promo, setPromo] = useState<PromoEligibility | null>(null);
   const [promoCampaignId, setPromoCampaignId] = useState("");
@@ -73,6 +76,8 @@ export function OrderNew({ onRecord }: Props) {
     setResult(null);
     setCard(null);
     setTeamCard(emptyTeamCard());
+    setTeamExample(null);
+    setTeamExampleConfirmed(false);
     setTeamBilling({ name: "", line1: "", city: "", state: "", postal_code: "", country: "US" });
     setAddr(null);
     setSession("");
@@ -238,6 +243,14 @@ export function OrderNew({ onRecord }: Props) {
           });
         }
         setSession("");
+        if (plan === "team" && created.publishable_key) {
+          try {
+            // Initial price needs only init, not card data, tax updates, SDK or captcha.
+            setOrder(await quoteTeam(created.id));
+          } catch (err) {
+            setOrder({ ...created, quote_error: err instanceof Error ? err.message : "报价读取失败，本步骤未提交付款" });
+          }
+        }
         return;
       }
       if (linkOnly) {
@@ -259,6 +272,18 @@ export function OrderNew({ onRecord }: Props) {
         setError("请填写完整账单地址（姓名、街道、城市、邮编）。");
         return;
       }
+      if (teamOrder) {
+        const message = billingExampleError(billing, teamExample, teamExampleConfirmed);
+        if (message) { setError(message); return; }
+      }
+      if (teamOrder) {
+        const draft = teamCard;
+        if (!/^\d{12,19}$/.test(draft.number.replace(/[\s-]/g, "")) || !/^\d{3,4}$/.test(draft.cvc)
+          || !/^\d{1,2}$/.test(draft.exp_month) || !/^\d{2}|\d{4}$/.test(draft.exp_year)) {
+          setError("请填写有效的卡号、到期月份、到期年份和 CVC。");
+          return;
+        }
+      }
       if (teamOrder && billing.country === "US" && !billing.state.trim()) {
         setError("请填写账单地址的州。");
         return;
@@ -268,9 +293,21 @@ export function OrderNew({ onRecord }: Props) {
       if (teamOrder) {
         const prepared = await prepareTeam(order.id, billing);
         setOrder(prepared.order);
-        token = await createTeamPaymentMethod(prepared.context.publishable_key, teamCard, billing, prepared.context);
-        const captcha = await hostedCaptcha(prepared.context);
-        teamConfirm = { team_context_id: prepared.context.context_id, passive_captcha_token: captcha || undefined };
+        if (order.amount == null || prepared.order.amount !== order.amount || prepared.order.currency !== order.currency) {
+          setError("应付金额已按账单地址更新，请核对右侧金额后再次点击确认支付。本次尚未提交卡片或付款。");
+          return;
+        }
+        // The service tokenizes the card with Stripe; no PaymentMethod is created in the browser.
+        token = "";
+        teamConfirm = {
+          team_context_id: prepared.context.context_id,
+          card: {
+            number: teamCard.number.replace(/[\s-]/g, ""),
+            cvc: teamCard.cvc,
+            exp_month: teamCard.exp_month,
+            exp_year: teamCard.exp_year,
+          },
+        };
         setTeamCard(emptyTeamCard());
       } else {
         token = await card!.tokenize(billing);
@@ -284,6 +321,10 @@ export function OrderNew({ onRecord }: Props) {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "开通失败");
+      if (teamOrder && order) {
+        const latest = await getOrder(order.id).catch(() => null);
+        if (latest) setOrder(latest);
+      }
     } finally {
       setBusy(false);
     }
@@ -491,13 +532,29 @@ export function OrderNew({ onRecord }: Props) {
         {showTeamPayment && (
           <div className="order-payment">
             <TeamPaymentPanel card={teamCard} onCard={setTeamCard}
-              billing={teamBilling} onBilling={setTeamBilling} order={order} busy={busy}
+              billing={teamBilling} onBilling={(billing) => { setTeamBilling(billing); setTeamExampleConfirmed(false); }} order={order} busy={busy}
+              onExample={() => {
+                const example = randomBillingExample(teamBilling);
+                setTeamBilling(example); setTeamExample(example); setTeamExampleConfirmed(false); setError(null);
+              }}
+              hasExample={Boolean(teamExample)} exampleConfirmed={teamExampleConfirmed} onExampleConfirmed={setTeamExampleConfirmed}
               footer={<>{errorAlert}{primaryAction}</>} />
           </div>
         )}
 
         <div className="order-side">
           <OrderSummary plan={plan} country={country} order={order} seats={team.seats} />
+          {teamOrder && order && step < 2 && order.status === "awaiting_payment" && (
+            <Button variant="light" fullWidth mt="xs" loading={busy} type="button" onClick={async () => {
+              setBusy(true); setError(null);
+              try {
+                const complete = teamBilling.name.trim() && teamBilling.line1.trim() && teamBilling.city.trim() && teamBilling.postal_code.trim()
+                  && !billingExampleError(teamBilling, teamExample, teamExampleConfirmed);
+                setOrder(await quoteTeam(order.id, complete ? teamBilling : undefined));
+              } catch (err) { setError(err instanceof Error ? err.message : "报价读取失败"); }
+              finally { setBusy(false); }
+            }}>刷新应付金额</Button>
+          )}
           {order && step < 2 && (
             <Text size="xs" c="dimmed" mt="xs">
               想改套餐或地区？刷新页面重新开始。

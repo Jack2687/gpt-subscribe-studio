@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from gss_contracts import (
     AdapterCapabilities,
@@ -18,6 +20,43 @@ from gss_core.billing import address_for
 from gss_core.chatgpt import ChatGPTClient, clamp_team_seats
 from gss_core.countries import country_codes, currency_for
 from gss_core.proxies import align_proxy_region, configured_proxy, rotate_proxy_sid, session_proxy
+
+logger = logging.getLogger("gss.checkout")
+_STRIPE_PROXY_CHECK_URL = "https://api.stripe.com/v1/payment_methods"
+_STRIPE_PROXY_CHECK_TIMEOUT = 8.0
+
+
+def _probe_stripe_proxy(proxy: Optional[str], *, timeout: float = _STRIPE_PROXY_CHECK_TIMEOUT) -> bool:
+    """通过选定代理访问 Stripe，接受鉴权失败而拒绝代理错误。"""
+    try:
+        from gss_core.chatgpt import _new_session
+
+        http = _new_session(proxy=proxy, timeout=timeout)
+        try:
+            response = http.get(_STRIPE_PROXY_CHECK_URL, timeout=timeout)
+        finally:
+            close = getattr(http, "close", None)
+            if callable(close):
+                close()
+        status = int(getattr(response, "status_code", 0) or 0)
+        return 200 <= status < 500 and status != 407
+    except Exception as exc:
+        logger.warning("Team Stripe 代理预检失败 type=%s", type(exc).__name__)
+        return False
+
+
+def _team_proxy_candidates(proxy: Optional[str]) -> Iterable[Optional[str]]:
+    """返回原 SID 加最多两个新 SID，避免重复。"""
+    if proxy:
+        yield proxy
+    current = proxy or ""
+    for _ in range(2):
+        rotated = rotate_proxy_sid(current)
+        if not rotated or rotated == current:
+            break
+        yield rotated
+        current = rotated
+
 
 _LIST_PRICE = {
     Plan.PLUS: Decimal("20.00"),
@@ -61,15 +100,44 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
             req.proxy or session_proxy("checkout", req.billing_country) or configured_proxy("checkout"),
             req.billing_country,
         )
-        try:
-            created = self._create(req, proxy)
-        except DomainError as exc:
-            if exc.code is not ErrorCode.CHECKOUT_UPSTREAM_ERROR or "异常流量" not in str(exc):
-                raise
-            rotated = rotate_proxy_sid(proxy or "")
-            if not rotated or rotated == proxy:
-                raise
-            created = self._create(req, rotated)
+        used_proxy = proxy
+        created = None
+        if req.plan is Plan.TEAM:
+            # Team 只允许通过已预检的代理访问上游；候选为原 SID + 最多两个新 SID。
+            for candidate in _team_proxy_candidates(proxy):
+                reachable = await asyncio.to_thread(
+                    _probe_stripe_proxy,
+                    candidate,
+                    timeout=_STRIPE_PROXY_CHECK_TIMEOUT,
+                )
+                if not reachable:
+                    logger.warning("checkout_proxy_failed stage=team_stripe_precheck code=unreachable")
+                    continue
+                try:
+                    created = await asyncio.to_thread(self._create, req, candidate)
+                    used_proxy = candidate
+                    break
+                except DomainError as exc:
+                    if exc.code is not ErrorCode.CHECKOUT_UPSTREAM_ERROR or "异常流量" not in str(exc):
+                        raise
+                    logger.warning("checkout_proxy_failed stage=team_create code=unusual_activity")
+                    continue
+            if created is None:
+                raise DomainError(
+                    ErrorCode.CHECKOUT_UPSTREAM_ERROR,
+                    "订单代理连接Stripe失败，未创建结账/未付款",
+                )
+        else:
+            try:
+                created = await asyncio.to_thread(self._create, req, proxy)
+            except DomainError as exc:
+                if exc.code is not ErrorCode.CHECKOUT_UPSTREAM_ERROR or "异常流量" not in str(exc):
+                    raise
+                rotated = rotate_proxy_sid(proxy or "")
+                if not rotated or rotated == proxy:
+                    raise
+                created = await asyncio.to_thread(self._create, req, rotated)
+                used_proxy = rotated
         amount = created.amount
         # Team 托管长链的实际价格（席位、周期、优惠码）只在 Stripe 页面上有，拿不到报价就留空，
         # 不能拿写死的 25 × 席位数冒充应付金额。
@@ -87,6 +155,7 @@ class UpstreamCheckoutAdapter(CheckoutAdapterBase):
             billing=dict(address_for(req.billing_country)),
             checkout_kind=created.checkout_kind or ("hosted" if req.plan is Plan.TEAM else "custom"),
             confirm_return_url=created.confirm_return_url or "",
+            effective_proxy=used_proxy,
         )
 
     def _create(self, req: CheckoutRequest, proxy: Optional[str]):

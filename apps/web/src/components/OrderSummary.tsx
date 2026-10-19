@@ -62,11 +62,17 @@ export function OrderSummary({ plan, country, order, seats }: Props) {
               {!order
                 ? "创建结账后显示"
                 : isHostedOrder(order)
-                  ? "以 Stripe 结账页为准"
+                  ? "尚未取得 Stripe 报价"
                   : "未从结账拿到金额"}
             </Text>
           )}
         </Group>
+        {order?.quote_error && (
+          <Text size="xs" c="orange">{order.quote_error}</Text>
+        )}
+        {plan === "team" && due && (
+          <Text size="xs" c="dimmed">Stripe 当前报价；确认前会按账单地址重算税费。</Text>
+        )}
         {order && (
           <Text size="xs" c="dimmed" style={{ wordBreak: "break-all" }}>
             订单 {order.id}

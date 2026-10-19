@@ -64,6 +64,7 @@ class CheckoutResult:
     billing: Optional[Dict[str, str]] = None
     checkout_kind: str = "custom"
     confirm_return_url: str = ""
+    effective_proxy: Optional[str] = field(default=None, repr=False)
 
 
 @runtime_checkable

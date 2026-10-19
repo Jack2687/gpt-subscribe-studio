@@ -19,6 +19,7 @@ export interface Order {
     country?: string;
   } | null;
   last_error?: string | null;
+  quote_error?: string | null;
   next_action?: { type?: string; url?: string | null; client_secret?: string | null; challenge_type?: string; checkout_url?: string } | null;
   subscription?: { active: boolean; expires_at?: string | null; channel?: string | null } | null;
   checkout_kind?: string | null;
@@ -128,12 +129,40 @@ export interface TeamHostedContext {
   passive_captcha?: { site_key?: string; rqdata?: string | null; token_timeout_seconds?: number };
 }
 
-export async function prepareTeam(orderId: string, billing: BillingInput): Promise<{ order: Order; context: TeamHostedContext }> {
-  const res = await fetch(`/api/orders/${orderId}/team/prepare`, {
+async function fetchWithDeadline(url: string, init: RequestInit, ms: number, timeoutMessage: string): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    // AbortError alone is ambiguous (network cancel vs deadline); report the deadline explicitly.
+    if (timedOut) throw new Error(timeoutMessage);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function quoteTeam(orderId: string, billing?: BillingInput): Promise<Order> {
+  const res = await fetchWithDeadline(`/api/orders/${orderId}/team/quote`, {
     method: "POST", headers: jsonHeaders,
     body: JSON.stringify({ billing, browser_locale: navigator.language || "en-US",
       browser_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" }),
-  });
+  }, 25000, "读取 Stripe 报价超时；本步骤未提交付款确认，可稍后点击刷新应付金额");
+  if (!res.ok) throw new Error(await readError(res));
+  return await res.json();
+}
+
+export async function prepareTeam(
+  orderId: string, billing: BillingInput,
+  options: { passiveCaptchaToken?: string; timeoutMs?: number } = {},
+): Promise<{ order: Order; context: TeamHostedContext }> {
+  const res = await fetchWithDeadline(`/api/orders/${orderId}/team/prepare`, {
+    method: "POST", headers: jsonHeaders,
+    body: JSON.stringify({ billing, browser_locale: navigator.language || "en-US",
+      browser_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" }),
+  }, options.timeoutMs ?? 40000, "Stripe 支付准备超时；本步骤未提交付款确认，可稍后重试");
   if (!res.ok) throw new Error(await readError(res));
   return await res.json();
 }
@@ -144,10 +173,18 @@ export async function pollTeam(orderId: string): Promise<Order> {
   return await res.json();
 }
 
+export interface TeamCardPayload {
+  number: string;
+  cvc: string;
+  exp_month: string;
+  exp_year: string;
+}
+
 export interface TeamConfirmOptions {
   team_context_id: string;
   passive_captcha_token?: string;
   rv_timestamp?: string;
+  card?: TeamCardPayload;
 }
 
 export async function payOrder(

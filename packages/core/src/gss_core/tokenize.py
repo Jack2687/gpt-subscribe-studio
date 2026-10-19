@@ -1,0 +1,155 @@
+"""Backend card tokenization through the Stripe Elements surface.
+
+The Elements surface answers `POST /v1/payment_methods` for an authenticated
+merchant publishable key when the request carries the Elements attribution set
+and the `js.stripe.com` origin. Verified against a live Team checkout: the
+endpoint returns card errors (real validation) instead of an integration-surface
+rejection. Card data exists only in this call's memory.
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, Optional
+
+from gss_contracts.errors import DomainError, ErrorCode
+from gss_core.redaction import redact_sensitive
+
+logger = logging.getLogger("gss.tokenize")
+
+_PAYMENT_METHODS_URL = "https://api.stripe.com/v1/payment_methods"
+_ELEMENTS_VERSION = "2025-03-31.basil"
+_ELEMENTS_UA = "stripe.js/2bae21f786; stripe-js-v3/2bae21f786; payment-element; deferred-intent"
+
+#: Only opaque ids ever leave this module.
+_CARD_KEYS = ("number", "cvc", "exp_month", "exp_year")
+
+
+def normalize_card(card: Dict[str, Any]) -> Dict[str, str]:
+    """Validate card shape; raise a message that never contains the PAN or CVC."""
+    if not isinstance(card, dict):
+        raise DomainError(ErrorCode.PAYMENT_DECLINED, "缺少卡片信息")
+    number = str(card.get("number") or "").replace(" ", "").replace("-", "")
+    cvc = str(card.get("cvc") or "").strip()
+    month = str(card.get("exp_month") or "").strip()
+    year = str(card.get("exp_year") or "").strip()
+    if not number.isdigit() or not 12 <= len(number) <= 19:
+        raise DomainError(ErrorCode.PAYMENT_DECLINED, "卡号格式不正确")
+    if not cvc.isdigit() or not 3 <= len(cvc) <= 4:
+        raise DomainError(ErrorCode.PAYMENT_DECLINED, "CVC 格式不正确")
+    if not month.isdigit() or not 1 <= int(month) <= 12:
+        raise DomainError(ErrorCode.PAYMENT_DECLINED, "到期月份不正确")
+    if not year.isdigit() or len(year) not in (2, 4):
+        raise DomainError(ErrorCode.PAYMENT_DECLINED, "到期年份不正确")
+    if len(year) == 2:
+        year = "20" + year
+    return {"number": number, "cvc": cvc, "exp_month": str(int(month)), "exp_year": year}
+
+
+def _scrub(message: str, card: Dict[str, str]) -> str:
+    """Remove card secrets from any upstream text before it reaches a caller."""
+    text = str(message or "")
+    for key in _CARD_KEYS:
+        value = card.get(key)
+        if value and len(value) >= 3:
+            text = "[已隐藏]".join(text.split(value))
+    return redact_sensitive(text)[:400]
+
+
+def tokenize_card(
+    session,
+    *,
+    card: Dict[str, Any],
+    billing: Dict[str, str],
+    publishable_key: str,
+    checkout_session_id: str,
+    device: Optional[Dict[str, str]] = None,
+    captcha_token: str = "",
+    time_on_page_ms: int = 32000,
+) -> str:
+    """Create a PaymentMethod on the Elements surface; return only its `pm_` id."""
+    if not publishable_key.startswith("pk_"):
+        raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少 Stripe 公钥，无法创建支付方式")
+    if not checkout_session_id.startswith("cs_"):
+        raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "缺少结账会话，无法创建支付方式")
+    safe = normalize_card(card)
+    device = device or {}
+
+    form = {
+        "type": "card",
+        "card[number]": safe["number"],
+        "card[cvc]": safe["cvc"],
+        "card[exp_month]": safe["exp_month"],
+        "card[exp_year]": safe["exp_year"],
+        "billing_details[name]": str(billing.get("name") or ""),
+        "billing_details[address][country]": str(billing.get("country") or "").upper(),
+        "billing_details[address][line1]": str(billing.get("line1") or ""),
+        "billing_details[address][city]": str(billing.get("city") or ""),
+        "billing_details[address][state]": str(billing.get("state") or ""),
+        "billing_details[address][postal_code]": str(billing.get("postal_code") or ""),
+        "allow_redisplay": "unspecified",
+        "payment_user_agent": _ELEMENTS_UA,
+        "referrer": "https://chatgpt.com",
+        "time_on_page": str(max(1000, int(time_on_page_ms))),
+        "client_attribution_metadata[client_session_id]": str(device.get("client_session_id") or uuid.uuid4()),
+        "client_attribution_metadata[checkout_session_id]": checkout_session_id,
+        "client_attribution_metadata[merchant_integration_source]": "elements",
+        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
+        "client_attribution_metadata[merchant_integration_version]": "2021",
+        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
+        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+        "guid": str(device.get("guid") or ""),
+        "muid": str(device.get("muid") or ""),
+        "sid": str(device.get("sid") or ""),
+        "key": publishable_key,
+        "_stripe_version": _ELEMENTS_VERSION,
+    }
+    if billing.get("email"):
+        form["billing_details[email]"] = str(billing["email"])
+    if captcha_token:
+        form["radar_options[hcaptcha_token]"] = captcha_token
+
+    headers = {
+        "Origin": "https://js.stripe.com",
+        "Referer": "https://js.stripe.com/",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+    try:
+        response = session.post(_PAYMENT_METHODS_URL, data=form, headers=headers, timeout=30)
+    except Exception as exc:
+        logger.warning("tokenize_transport_failed type=%s", type(exc).__name__)
+        raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "提交卡片时网络中断，扣款结果待确认，请查询状态") from exc
+    finally:
+        # Drop card references as early as possible; the dict is local to this frame.
+        for key in _CARD_KEYS:
+            form.pop(f"card[{key}]", None)
+
+    status = int(getattr(response, "status_code", 0) or 0)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    if status == 200 and isinstance(payload, dict):
+        pm_id = str(payload.get("id") or "")
+        if pm_id.startswith("pm_"):
+            card_info = payload.get("card") or {}
+            logger.info("tokenize_ok brand=%s last4_present=%s funding=%s",
+                        card_info.get("brand"), bool(card_info.get("last4")), card_info.get("funding"))
+            return pm_id
+    error = payload.get("error") if isinstance(payload, dict) else None
+    error = error if isinstance(error, dict) else {}
+    message = _scrub(str(error.get("message") or f"Stripe 支付方式创建失败（{status}）"), safe)
+    code = str(error.get("code") or "")
+    decline = str(error.get("decline_code") or "")
+    logger.warning("tokenize_failed http=%s type=%s code=%s decline=%s", status,
+                   error.get("type"), code, decline)
+    detail = " ".join(part for part in (code, decline) if part)
+    raise DomainError(ErrorCode.PAYMENT_DECLINED, f"{message}{f' ({detail})' if detail else ''}"
+                      if message else f"Stripe 支付方式创建失败（{status}）")
+
+
+def hosted_confirm_needs_card(token: str) -> bool:
+    """Whether a stored token is a hosted payment method vs a browser confirmation token."""
+    return str(token or "").startswith("pm_")

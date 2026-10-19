@@ -1,6 +1,15 @@
 import { PasswordInput, SimpleGrid, Stack, Text, TextInput } from "@mantine/core";
 
-import type { TeamCardDraft } from "./teamPayment";
+export interface TeamCardDraft {
+  number: string;
+  exp_month: string;
+  exp_year: string;
+  cvc: string;
+}
+
+export function emptyTeamCard(): TeamCardDraft {
+  return { number: "", exp_month: "", exp_year: "", cvc: "" };
+}
 
 interface Props {
   value: TeamCardDraft;
@@ -8,18 +17,14 @@ interface Props {
   disabled?: boolean;
 }
 
-/** Pure input form: visible before checkout/public-key acquisition. */
+/** Card fields are sent once to this service, which tokenizes them with Stripe. */
 export function TeamCardForm({ value, onChange, disabled }: Props) {
-  const change = (field: keyof TeamCardDraft) => (event: React.ChangeEvent<HTMLInputElement>) => {
-    const text = event.currentTarget.value;
-    onChange({ ...value, [field]: text });
-  };
+  const change = (field: keyof TeamCardDraft) => (event: React.ChangeEvent<HTMLInputElement>) =>
+    onChange({ ...value, [field]: event.currentTarget.value });
   return (
     <Stack gap="sm" data-testid="team-card-form">
       <Text fw={600}>Team 卡片信息</Text>
-      <Text size="xs" c="dimmed">
-        确认支付时，卡片由浏览器直接提交 Stripe。
-      </Text>
+      <Text size="xs" c="dimmed">卡号只用于本次向 Stripe 换取支付标识，不写入订单记录。</Text>
       <TextInput label="卡号" value={value.number} onChange={change("number")}
         inputMode="numeric" autoComplete="off" disabled={disabled} data-testid="team-card-number" />
       <SimpleGrid cols={{ base: 1, xs: 3 }}>

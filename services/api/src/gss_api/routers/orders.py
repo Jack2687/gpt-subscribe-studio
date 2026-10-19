@@ -35,7 +35,7 @@ from gss_orchestrator.pipeline import apply_payment_result, assert_deliverable
 from gss_payment.adapter import hosted_payment_result
 
 from ..runtime import build_pipeline
-from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut, OrderPayRequest, SubscriptionOut, TeamPrepareRequest
+from ..schemas import ErrorOut, ModeIn, OrderCreateRequest, OrderOut, OrderPayRequest, SubscriptionOut, TeamPrepareRequest, TeamQuoteRequest
 from ..store import store
 from .events import notify_order_update
 
@@ -80,6 +80,7 @@ def _to_out(order: Order) -> OrderOut:
         currency=view.currency,
         billing=view.billing,
         last_error=view.last_error,
+        quote_error=view.quote_error,
         next_action=view.next_action,
         subscription=subscription,
         checkout_kind=view.checkout_kind,
@@ -266,6 +267,9 @@ async def create_order(
         secrets.checkout_session_id = checkout.checkout_session_id or ""
         secrets.publishable_key = checkout.publishable_key or ""
         secrets.billing = dict(checkout.billing or {})
+        effective_proxy = getattr(checkout, "effective_proxy", None)
+        if effective_proxy is not None:
+            secrets.proxy = effective_proxy
         vault.put(order.id, secrets)
     store.update_status(order.id, OrderStatus.PENDING_CHECKOUT)
     store.update_status(order.id, OrderStatus.AWAITING_PAYMENT)
@@ -311,6 +315,49 @@ def _team_quote(view, context: dict) -> None:
     divisor = 1 if code in zero else 100
     view.amount = str(Decimal(context["amount_minor"]) / divisor)
     view.currency = code
+    view.quote_error = None
+
+
+@router.post("/orders/{order_id}/team/quote", response_model=OrderOut)
+async def quote_team(order_id: str, payload: TeamQuoteRequest) -> OrderOut:
+    async with _team_locks.setdefault(order_id, asyncio.Lock()):
+        order = store.get_order(order_id)
+        if order is None or order.plan is not Plan.TEAM:
+            raise HTTPException(404, "Team 订单不存在")
+        if order.status is not OrderStatus.AWAITING_PAYMENT:
+            raise HTTPException(409, "支付已提交，请查询支付状态")
+        secrets = vault.get(order_id)
+        if secrets is None:
+            raise _error(401, ErrorCode.SESSION_EXPIRED, "session 已过期")
+        view = store.view(order_id)
+        if use_fake_adapters():
+            return _to_out(order)
+        billing = {k: v.strip() for k, v in payload.billing.model_dump().items()} if payload.billing else None
+        if billing:
+            billing["country"] = billing["country"].upper()
+            if not is_supported(billing["country"]):
+                raise HTTPException(400, "不支持的支付账单国家")
+        started = time.monotonic()
+        client = _team_client(secrets)
+        try:
+            quote = await asyncio.to_thread(TeamHostedClient(client).quote,
+                session_id=secrets.checkout_session_id, key=secrets.publishable_key,
+                billing=billing, currency=view.currency or "", browser_locale=payload.browser_locale,
+                browser_timezone=payload.browser_timezone)
+            _team_quote(view, quote)
+            logger.info("team_quote_ok id=%s amount=%s currency=%s elapsed=%.2f",
+                        order_id, view.amount, view.currency, time.monotonic() - started)
+        except DomainError as exc:
+            view.quote_error = exc.message
+            logger.warning("team_quote_failed id=%s code=%s elapsed=%.2f error=%s", order_id,
+                           exc.code.value, time.monotonic() - started, redact_sensitive(exc.message)[:160])
+        except Exception as exc:
+            view.quote_error = "读取 Stripe 报价时连接中断，本步骤未提交付款确认"
+            logger.warning("team_quote_error id=%s type=%s elapsed=%.2f", order_id, type(exc).__name__,
+                           time.monotonic() - started)
+        finally:
+            client.close()
+        return _to_out(order)
 
 
 @router.post("/orders/{order_id}/team/prepare", tags=["orders"])
@@ -336,13 +383,22 @@ async def prepare_team(order_id: str, payload: TeamPrepareRequest) -> dict:
                 "client_session_id": "fixture-client", "guid": "fixture-guid", "muid": "fixture-muid", "sid": "fixture-sid",
                 "passive_captcha": {}}
         else:
+            started = time.monotonic()
             client = _team_client(secrets)
             try:
                 context = await asyncio.to_thread(TeamHostedClient(client).prepare,
                     session_id=secrets.checkout_session_id, key=secrets.publishable_key, billing=billing,
                     currency=store.view(order_id).currency or "", browser_locale=payload.browser_locale,
-                    browser_timezone=payload.browser_timezone)
+                    browser_timezone=payload.browser_timezone,
+                    on_quote=lambda quote: _team_quote(store.view(order_id), quote))
+                logger.info("team_prepare_ok id=%s amount=%s currency=%s elapsed=%.2f",
+                            order_id, store.view(order_id).amount, store.view(order_id).currency,
+                            time.monotonic() - started)
             except DomainError as exc:
+                store.view(order_id).last_error = exc.message
+                logger.warning("team_prepare_failed id=%s code=%s elapsed=%.2f confirm_submitted=False error=%s",
+                               order_id, exc.code.value, time.monotonic() - started,
+                               redact_sensitive(exc.message)[:160])
                 raise _from_domain(exc)
             finally:
                 client.close()
@@ -351,6 +407,7 @@ async def prepare_team(order_id: str, payload: TeamPrepareRequest) -> dict:
         vault.put(order_id, secrets)
         view = store.view(order_id)
         view.billing = billing
+        view.last_error = None
         _team_quote(view, context)
         return {"order": _to_out(order).model_dump(), "context": {k: context[k] for k in (
             "context_id", "session_id", "publishable_key", "eid", "amount_minor", "currency",
@@ -432,8 +489,36 @@ async def _pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
             raise HTTPException(409, "Team 会话上下文不匹配，请重新初始化")
         if time.time() - context["prepared_at"] > 600 or address != context["billing"]:
             raise HTTPException(409, "Team 账单或会话已变更，请重新初始化")
-        if context.get("passive_captcha", {}).get("site_key") and not payload.passive_captcha_token:
+        # Server-side card submission acquires its own pm_ and may run without a browser captcha token.
+        if (payload.card is None and context.get("passive_captcha", {}).get("site_key")
+                and not payload.passive_captcha_token):
             raise HTTPException(400, "请先完成当前会话的 Stripe 验证")
+
+        if payload.card is not None:
+            if payload.payment_method_token:
+                raise HTTPException(400, "卡号与 payment_method 只能二选一")
+            started = time.monotonic()
+            client = _team_client(secrets)
+            try:
+                pm_id = await asyncio.to_thread(
+                    TeamHostedClient(client).tokenize,
+                    card=payload.card.model_dump(), billing=address,
+                    publishable_key=secrets.publishable_key, session_id=secrets.checkout_session_id,
+                    device={"guid": context.get("guid", ""), "muid": context.get("muid", ""),
+                            "sid": context.get("sid", ""),
+                            "client_session_id": context.get("client_session_id", "")},
+                    captcha_token=payload.passive_captcha_token or "",
+                    time_on_page_ms=int((time.time() - float(context.get("prepared_at") or time.time())) * 1000),
+                )
+                logger.info("team_tokenize_ok id=%s elapsed=%.2f", order_id, time.monotonic() - started)
+            except DomainError as exc:
+                logger.warning("team_tokenize_failed id=%s code=%s elapsed=%.2f error=%s", order_id,
+                               exc.code.value, time.monotonic() - started,
+                               redact_sensitive(exc.message)[:160])
+                raise _from_domain(exc)
+            finally:
+                client.close()
+            payload = payload.model_copy(update={"payment_method_token": pm_id})
 
     if payload.billing is not None:
         custom = {k: v.strip() for k, v in payload.billing.model_dump().items()}

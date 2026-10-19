@@ -313,3 +313,23 @@ def test_sse_frames_are_valid_json() -> None:
     frame = _sse({"type": "init", "ok": True, "none": None, "msg": "已支付"})
     assert frame.startswith("data: ") and frame.endswith("\n\n")
     assert json.loads(frame[len("data: "):]) == {"type": "init", "ok": True, "none": None, "msg": "已支付"}
+
+
+def test_checkout_effective_proxy_is_kept_only_in_memory(monkeypatch):
+    from dataclasses import replace
+    from gss_api.runtime import build_pipeline
+    pipeline = build_pipeline()
+    original = pipeline.deps.checkout.create_checkout
+    used = "http://fixture-host.invalid:3010"
+    async def checkout(request):
+        result = await original(request)
+        return replace(result, effective_proxy=used)
+    monkeypatch.setattr(pipeline.deps.checkout, "create_checkout", checkout)
+    monkeypatch.setattr("gss_api.routers.orders.build_pipeline", lambda: pipeline)
+    store.clear()
+    client = TestClient(create_app())
+    r = client.post("/api/orders", json={"plan": "team", "billing_country": "EG", "seat_quantity": 2, "session": "fixture-session"})
+    assert r.status_code == 201, r.text
+    assert vault.get(r.json()["id"]).proxy == used
+    assert "effective_proxy" not in r.json()
+    assert used not in r.text

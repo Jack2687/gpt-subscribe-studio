@@ -37,12 +37,27 @@ class BillingIn(BaseModel):
     country: str = Field(min_length=2, max_length=2)
 
 
+class CardIn(BaseModel):
+    """Server-side card submission. Never persisted or logged."""
+    number: str = Field(min_length=12, max_length=23)
+    cvc: str = Field(min_length=3, max_length=4)
+    exp_month: str = Field(min_length=1, max_length=2)
+    exp_year: str = Field(min_length=2, max_length=4)
+
+
 class OrderPayRequest(BaseModel):
-    payment_method_token: str
+    payment_method_token: str = ""
     billing: Optional[BillingIn] = None
     team_context_id: Optional[str] = Field(default=None, max_length=80)
     passive_captcha_token: Optional[str] = Field(default=None, max_length=20000)
     rv_timestamp: Optional[str] = Field(default=None, max_length=5000)
+    card: Optional[CardIn] = None
+
+
+class TeamQuoteRequest(BaseModel):
+    billing: Optional[BillingIn] = None
+    browser_locale: str = Field(default="en-US", max_length=30)
+    browser_timezone: str = Field(default="UTC", max_length=80)
 
 
 class TeamPrepareRequest(BaseModel):
@@ -70,6 +85,7 @@ class OrderOut(BaseModel):
     currency: Optional[str] = None
     billing: Optional[Dict[str, str]] = None
     last_error: Optional[str] = None
+    quote_error: Optional[str] = None
     next_action: Optional[Dict[str, Any]] = None
     subscription: Optional[SubscriptionOut] = None
     checkout_kind: Optional[str] = None

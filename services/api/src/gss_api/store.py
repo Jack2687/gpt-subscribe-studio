@@ -20,6 +20,7 @@ class OrderView:
     amount: Optional[str] = None
     currency: Optional[str] = None
     last_error: Optional[str] = None
+    quote_error: Optional[str] = None
     next_action: Optional[Dict[str, Any]] = None
     subscription: Optional[SubscriptionInfo] = None
     checkout_kind: Optional[str] = None
