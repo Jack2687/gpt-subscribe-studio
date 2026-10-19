@@ -80,8 +80,11 @@ def test_hosted_confirm_exact_fields_then_get_poll():
     expected = set(FIXTURE["confirm"]["record"]["request"]["fields"])
     assert set(body) == expected
     assert body["_stripe_version"] == HOSTED_API_VERSION
+    # Confirm attribution matches the HAR hosted flow.
+    assert body["client_attribution_metadata[merchant_integration_source]"] == "checkout"
     assert body["client_attribution_metadata[merchant_integration_version]"] == "hosted_checkout"
     assert body["client_attribution_metadata[payment_method_selection_flow]"] == "merchant_specified"
+
     assert body["client_attribution_metadata[checkout_config_id]"] == "fixture-config-updated"
     assert body["passive_captcha_token"] == "fixture-captcha"
     assert body["rv_timestamp"] == "fixture-timing"

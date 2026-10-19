@@ -117,15 +117,7 @@ export function randomBillingExample(current: BillingInput, rng: () => number = 
   };
 }
 
-export function billingExampleError(
-  billing: BillingInput,
-  example: BillingInput | null,
-  confirmed: boolean,
-): string | null {
-  if (!example) return null;
-  if (billing.line1.trim() === example.line1.trim() || /\[示例\]|\bExample Street\b/i.test(billing.line1)) {
-    return "请将生成的示例街道替换为实际账单街道地址。";
-  }
-  if (!confirmed) return "请核对地址后勾选「已替换示例并确认是实际账单地址」。";
+/** Generated addresses are ready to submit; nothing else must be confirmed. */
+export function billingExampleError(): string | null {
   return null;
 }

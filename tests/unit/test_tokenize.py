@@ -31,7 +31,7 @@ class HTTP:
         return SimpleNamespace(status_code=self.status, json=lambda: self.payload)
 
 
-def test_tokenize_sends_elements_attribution_from_js_stripe_origin():
+def test_tokenize_sends_hosted_attribution_from_js_stripe_origin():
     http = HTTP()
     pm = tokenize_card(http, card=card(), billing=BILLING, publishable_key="pk_live_fixture",
                        checkout_session_id="cs_live_fixture",
@@ -42,12 +42,12 @@ def test_tokenize_sends_elements_attribution_from_js_stripe_origin():
     assert call["headers"]["Origin"] == "https://js.stripe.com"
     data = call["data"]
     assert data["card[number]"] == "4242424242424242"  # release-check: ignore
-    assert data["client_attribution_metadata[merchant_integration_source]"] == "elements"
-    assert data["client_attribution_metadata[merchant_integration_subtype]"] == "payment-element"
-    assert data["client_attribution_metadata[payment_method_selection_flow]"] == "automatic"
+    assert data["client_attribution_metadata[merchant_integration_source]"] == "checkout"
+    assert data["client_attribution_metadata[merchant_integration_version]"] == "hosted_checkout"
+    assert data["client_attribution_metadata[payment_method_selection_flow]"] == "merchant_specified"
     assert data["client_attribution_metadata[checkout_session_id]"] == "cs_live_fixture"
     assert data["guid"] == "g1" and data["muid"] == "m1" and data["sid"] == "s1"
-    assert data["_stripe_version"] == "2025-03-31.basil"
+    assert data["_stripe_version"] == "2020-08-27;custom_checkout_beta=v1"
     assert "radar_options[hcaptcha_token]" not in data
 
 

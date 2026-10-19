@@ -81,6 +81,12 @@ class TeamHostedClient:
         payload = _json(response)
         status = int(getattr(response, "status_code", 0) or 0)
         if status >= 400:
+            error = payload.get("error") if isinstance(payload, dict) else None
+            error = error if isinstance(error, dict) else {}
+            logger.warning(
+                "hosted_stripe_error http=%s type=%s code=%s decline=%s param=%s msg=%s",
+                status, error.get("type"), error.get("code"), error.get("decline_code"),
+                error.get("param"), str(error.get("message") or "")[:300])
             _raise_stripe(payload, status)
         return payload
 
@@ -227,6 +233,7 @@ class TeamHostedClient:
                 "guid": context["guid"], "muid": context["muid"], "sid": context["sid"],
                 "client_attribution_metadata[client_session_id]": context["client_session_id"],
                 "client_attribution_metadata[checkout_session_id]": context["session_id"],
+                # Matches the HAR hosted flow used to create the payment method.
                 "client_attribution_metadata[merchant_integration_source]": "checkout",
                 "client_attribution_metadata[merchant_integration_version]": "hosted_checkout",
                 "client_attribution_metadata[payment_method_selection_flow]": "merchant_specified",
@@ -241,12 +248,12 @@ class TeamHostedClient:
 
     def tokenize(self, *, card: dict, billing: dict[str, str], publishable_key: str,
                  session_id: str, device: dict[str, str] | None = None,
-                 captcha_token: str = "", time_on_page_ms: int = 32000) -> str:
-        """Create a PaymentMethod on the Elements surface; return only the pm_ id."""
+                 captcha_token: str = "") -> str:
+        """Create a PaymentMethod for this hosted session; return only the pm_ id."""
         from .tokenize import tokenize_card
         return tokenize_card(self.http, card=card, billing=billing, publishable_key=publishable_key,
                              checkout_session_id=session_id, device=device,
-                             captcha_token=captcha_token, time_on_page_ms=time_on_page_ms)
+                             captcha_token=captcha_token)
 
     def poll(self, *, session_id: str, key: str) -> dict:
         return self.get(f"payment_pages/{session_id}/poll", {"key": key})

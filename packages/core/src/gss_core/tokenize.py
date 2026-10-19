@@ -19,8 +19,9 @@ from gss_core.redaction import redact_sensitive
 logger = logging.getLogger("gss.tokenize")
 
 _PAYMENT_METHODS_URL = "https://api.stripe.com/v1/payment_methods"
-_ELEMENTS_VERSION = "2025-03-31.basil"
-_ELEMENTS_UA = "stripe.js/2bae21f786; stripe-js-v3/2bae21f786; payment-element; deferred-intent"
+# Hosted checkout sessions require the hosted API version and attribution set.
+_HOSTED_VERSION = "2020-08-27;custom_checkout_beta=v1"
+_HOSTED_UA = "stripe.js/2bae21f786; stripe-js-v3/2bae21f786; checkout"
 
 #: Only opaque ids ever leave this module.
 _CARD_KEYS = ("number", "cvc", "exp_month", "exp_year")
@@ -66,7 +67,6 @@ def tokenize_card(
     checkout_session_id: str,
     device: Optional[Dict[str, str]] = None,
     captcha_token: str = "",
-    time_on_page_ms: int = 32000,
 ) -> str:
     """Create a PaymentMethod on the Elements surface; return only its `pm_` id."""
     if not publishable_key.startswith("pk_"):
@@ -88,22 +88,17 @@ def tokenize_card(
         "billing_details[address][city]": str(billing.get("city") or ""),
         "billing_details[address][state]": str(billing.get("state") or ""),
         "billing_details[address][postal_code]": str(billing.get("postal_code") or ""),
-        "allow_redisplay": "unspecified",
-        "payment_user_agent": _ELEMENTS_UA,
-        "referrer": "https://chatgpt.com",
-        "time_on_page": str(max(1000, int(time_on_page_ms))),
+        "payment_user_agent": _HOSTED_UA,
         "client_attribution_metadata[client_session_id]": str(device.get("client_session_id") or uuid.uuid4()),
         "client_attribution_metadata[checkout_session_id]": checkout_session_id,
-        "client_attribution_metadata[merchant_integration_source]": "elements",
-        "client_attribution_metadata[merchant_integration_subtype]": "payment-element",
-        "client_attribution_metadata[merchant_integration_version]": "2021",
-        "client_attribution_metadata[payment_intent_creation_flow]": "deferred",
-        "client_attribution_metadata[payment_method_selection_flow]": "automatic",
+        "client_attribution_metadata[merchant_integration_source]": "checkout",
+        "client_attribution_metadata[merchant_integration_version]": "hosted_checkout",
+        "client_attribution_metadata[payment_method_selection_flow]": "merchant_specified",
         "guid": str(device.get("guid") or ""),
         "muid": str(device.get("muid") or ""),
         "sid": str(device.get("sid") or ""),
         "key": publishable_key,
-        "_stripe_version": _ELEMENTS_VERSION,
+        "_stripe_version": _HOSTED_VERSION,
     }
     if billing.get("email"):
         form["billing_details[email]"] = str(billing["email"])

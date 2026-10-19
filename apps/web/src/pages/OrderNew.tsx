@@ -26,7 +26,7 @@ import { ResultPanel } from "../components/ResultPanel";
 import { SessionField } from "../components/SessionField";
 import { StripeCardFields, loadStripe, type StripeCardHandle } from "../card-payment/CardFields";
 import { TeamPaymentPanel } from "../components/TeamPaymentPanel";
-import { billingExampleError, randomBillingExample } from "../card-payment/billingExamples";
+import { randomBillingExample } from "../card-payment/billingExamples";
 import { emptyTeamCard, type TeamCardDraft } from "../card-payment/TeamCardForm";
 
 interface Props {
@@ -52,7 +52,6 @@ export function OrderNew({ onRecord }: Props) {
     name: "", line1: "", city: "", state: "", postal_code: "", country: "US",
   });
   const [teamExample, setTeamExample] = useState<BillingInput | null>(null);
-  const [teamExampleConfirmed, setTeamExampleConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [promo, setPromo] = useState<PromoEligibility | null>(null);
   const [promoCampaignId, setPromoCampaignId] = useState("");
@@ -77,7 +76,6 @@ export function OrderNew({ onRecord }: Props) {
     setCard(null);
     setTeamCard(emptyTeamCard());
     setTeamExample(null);
-    setTeamExampleConfirmed(false);
     setTeamBilling({ name: "", line1: "", city: "", state: "", postal_code: "", country: "US" });
     setAddr(null);
     setSession("");
@@ -271,10 +269,6 @@ export function OrderNew({ onRecord }: Props) {
       if (!billing || !billing.name.trim() || !billing.line1.trim() || !billing.city.trim() || !billing.postal_code.trim()) {
         setError("请填写完整账单地址（姓名、街道、城市、邮编）。");
         return;
-      }
-      if (teamOrder) {
-        const message = billingExampleError(billing, teamExample, teamExampleConfirmed);
-        if (message) { setError(message); return; }
       }
       if (teamOrder) {
         const draft = teamCard;
@@ -532,12 +526,12 @@ export function OrderNew({ onRecord }: Props) {
         {showTeamPayment && (
           <div className="order-payment">
             <TeamPaymentPanel card={teamCard} onCard={setTeamCard}
-              billing={teamBilling} onBilling={(billing) => { setTeamBilling(billing); setTeamExampleConfirmed(false); }} order={order} busy={busy}
+              billing={teamBilling} onBilling={setTeamBilling} order={order} busy={busy}
               onExample={() => {
                 const example = randomBillingExample(teamBilling);
-                setTeamBilling(example); setTeamExample(example); setTeamExampleConfirmed(false); setError(null);
+                setTeamBilling(example); setTeamExample(example); setError(null);
               }}
-              hasExample={Boolean(teamExample)} exampleConfirmed={teamExampleConfirmed} onExampleConfirmed={setTeamExampleConfirmed}
+              hasExample={Boolean(teamExample)}
               footer={<>{errorAlert}{primaryAction}</>} />
           </div>
         )}
@@ -548,8 +542,8 @@ export function OrderNew({ onRecord }: Props) {
             <Button variant="light" fullWidth mt="xs" loading={busy} type="button" onClick={async () => {
               setBusy(true); setError(null);
               try {
-                const complete = teamBilling.name.trim() && teamBilling.line1.trim() && teamBilling.city.trim() && teamBilling.postal_code.trim()
-                  && !billingExampleError(teamBilling, teamExample, teamExampleConfirmed);
+                const complete = Boolean(teamBilling.name.trim() && teamBilling.line1.trim()
+                  && teamBilling.city.trim() && teamBilling.postal_code.trim());
                 setOrder(await quoteTeam(order.id, complete ? teamBilling : undefined));
               } catch (err) { setError(err instanceof Error ? err.message : "报价读取失败"); }
               finally { setBusy(false); }

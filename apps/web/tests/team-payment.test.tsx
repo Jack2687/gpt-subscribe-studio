@@ -149,22 +149,20 @@ test("Generated addresses cover every tax-free state", () => {
   assert.deepEqual([...states].sort(), [...TAX_FREE_STATES].sort());
 });
 
-test("Unchanged example street is blocked even when confirmation is checked", () => {
+test("Generated address is ready to submit without extra confirmation", () => {
   const example = randomBillingExample(billing, () => 0);
-  assert.match(billingExampleError(example, example, true)!, /替换/);
-  const actual = { ...example, line1: "Fixture Actual Street" };
-  assert.match(billingExampleError(actual, example, false)!, /勾选/);
-  assert.equal(billingExampleError(actual, example, true), null);
-  assert.equal(billingExampleError(actual, null, false), null);
+  assert.equal(billingExampleError(), null);
+  assert.match(example.line1, /^\d+ [A-Za-z]/);
 });
 
-test("Team example controls identify generated data and require address confirmation", () => {
+test("Team example controls describe the address as directly usable", () => {
   const html = renderToStaticMarkup(<MantineProvider><TeamPaymentPanel card={emptyTeamCard()} onCard={() => {}}
     billing={billing} onBilling={() => {}} order={null} busy={false} onExample={() => {}}
-    hasExample exampleConfirmed={false} onExampleConfirmed={() => {}} /></MantineProvider>);
+    hasExample /></MantineProvider>);
   assert.ok(html.includes("随机示例地址"));
   assert.ok(html.includes("已填充虚构示例"));
-  assert.ok(html.includes("已替换示例并确认是实际账单地址"));
+  assert.ok(html.includes("可直接用于本次支付"));
+  assert.ok(!html.includes("已替换示例并确认是实际账单地址"));
 });
 
 

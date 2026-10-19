@@ -508,7 +508,6 @@ async def _pay_order(order_id: str, payload: OrderPayRequest) -> OrderOut:
                             "sid": context.get("sid", ""),
                             "client_session_id": context.get("client_session_id", "")},
                     captcha_token=payload.passive_captcha_token or "",
-                    time_on_page_ms=int((time.time() - float(context.get("prepared_at") or time.time())) * 1000),
                 )
                 logger.info("team_tokenize_ok id=%s elapsed=%.2f", order_id, time.monotonic() - started)
             except DomainError as exc:
