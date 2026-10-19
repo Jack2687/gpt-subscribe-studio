@@ -102,11 +102,28 @@ def test_missing_publishable_key_or_session_is_rejected_before_network():
     assert http.calls == []
 
 
-def test_transport_failure_is_unknown_state_not_declined():
+def test_transport_failure_retries_then_reports_no_payment_submitted():
+    http = HTTP(raises=True)
     with pytest.raises(DomainError) as caught:
-        tokenize_card(HTTP(raises=True), card=card(), billing=BILLING,
+        tokenize_card(http, card=card(), billing=BILLING,
                       publishable_key="pk_live_fixture", checkout_session_id="cs_live_fixture")
-    assert caught.value.code is ErrorCode.PAYMENT_UNKNOWN_STATE
+    # A handshake failure never reaches Stripe, so the same call is retried first.
+    assert len(http.calls) == 3
+    assert caught.value.code is ErrorCode.CHECKOUT_UPSTREAM_ERROR
+    assert "未提交付款" in caught.value.message
+
+
+def test_transport_failure_then_success_returns_payment_method():
+    class Flaky(HTTP):
+        def post(self, url, data=None, headers=None, timeout=None, **kw):
+            if not self.calls:
+                self.calls.append({"url": url, "data": {}, "headers": {}})
+                raise TimeoutError("fixture")
+            return super().post(url, data, headers, timeout, **kw)
+    http = Flaky()
+    assert tokenize_card(http, card=card(), billing=BILLING, publishable_key="pk_live_fixture",
+                         checkout_session_id="cs_live_fixture") == "pm_fixture"
+    assert len(http.calls) == 2
 
 
 @pytest.mark.parametrize("bad", [

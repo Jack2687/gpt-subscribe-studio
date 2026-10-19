@@ -9,6 +9,7 @@ rejection. Card data exists only in this call's memory.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Optional
@@ -114,15 +115,28 @@ def tokenize_card(
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
     }
-    try:
-        response = session.post(_PAYMENT_METHODS_URL, data=form, headers=headers, timeout=30)
-    except Exception as exc:
-        logger.warning("tokenize_transport_failed type=%s", type(exc).__name__)
-        raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE, "提交卡片时网络中断，扣款结果待确认，请查询状态") from exc
-    finally:
-        # Drop card references as early as possible; the dict is local to this frame.
-        for key in _CARD_KEYS:
-            form.pop(f"card[{key}]", None)
+    # A connection-level failure means the request never reached Stripe, so retrying
+    # the same call is safe. Any response at all is handled below without retrying.
+    response = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = session.post(_PAYMENT_METHODS_URL, data=form, headers=headers, timeout=30)
+            break
+        except Exception as exc:
+            last_error = exc
+            code = getattr(exc, "code", None)
+            logger.warning("tokenize_transport_failed type=%s code=%s attempt=%s",
+                           type(exc).__name__, code, attempt + 1)
+            if attempt < 2:
+                time.sleep(0.6 * (attempt + 1))
+    # Drop card references as early as possible; `form` is local to this frame.
+    for key in _CARD_KEYS:
+        form.pop(f"card[{key}]", None)
+
+    if response is None:
+        raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR,
+                          "创建支付方式时代理连接中断；本步骤未提交付款，稍后重试即可") from last_error
 
     status = int(getattr(response, "status_code", 0) or 0)
     try:

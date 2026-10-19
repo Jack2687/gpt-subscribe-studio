@@ -233,8 +233,11 @@ class TeamHostedClient:
         phase_started = time.monotonic()
         timing = self.current_timing(session_id)
         logger.info("hosted_phase phase=timing elapsed=%.2f found=%s", time.monotonic() - phase_started, bool(timing))
+        # rv_timestamp is a risk signal, not a required field: a slow proxy that cannot
+        # fetch the Stripe bundle must not abort the whole payment preparation. Confirm
+        # still validates, so a missing value only lowers the score.
         if not timing:
-            raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR, "当前官方结账脚本的会话字段提取失败，请打开官方长链完成付款")
+            logger.warning("hosted_timing_missing session=%s 继续确认，稍后由 Stripe 判定", session_id[-8:])
         from .fingerprint import register_device
         device = register_device(self.http)
         device["client_session_id"] = js_id

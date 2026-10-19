@@ -210,3 +210,14 @@ def test_initialization_reconnects_once_without_changing_proxy_but_confirm_never
     http.attempts = 0
     with pytest.raises(DomainError): h.post("payment_pages/cs_test_fixture/confirm", {})
     assert http.attempts == 1
+
+
+def test_prepare_without_timing_still_builds_context():
+    client = ChatGPTClient(access_token="fixture"); http = HTTP(); client._stripe_http = http
+    hosted = TeamHostedClient(client)
+    hosted.current_timing = lambda _sid: ""
+    ctx = hosted.prepare(session_id="cs_test_fixture", key="pk_test_fixture",
+                         billing=ADDRESS, currency="EGP")
+    # A slow proxy may fail to fetch the Stripe bundle; that is a risk signal, not a blocker.
+    assert ctx["amount_minor"] == 115000
+    assert ctx.get("rv_timestamp", "") == ""
