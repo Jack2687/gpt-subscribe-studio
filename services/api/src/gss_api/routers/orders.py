@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import logging
 import time
@@ -415,6 +416,53 @@ async def prepare_team(order_id: str, payload: TeamPrepareRequest) -> dict:
             "passive_captcha", "customer_email") if k in context}}
 
 
+async def _solve_challenge(order_id: str, secrets, view):
+    """Solve the stored intent challenge and return the refreshed payment result."""
+    from gss_core.captcha import challenge_from_intent, solve_hcaptcha, verify_challenge
+    from gss_core.config import load_settings
+    from gss_payment.adapter import hosted_payment_result as _hosted_result
+    settings = load_settings()
+    action = view.next_action or {}
+    logger.info("challenge_solve_start id=%s key=%s proxy=%s", order_id,
+                bool(settings.captcha_api_key), bool(secrets.proxy))
+    if not settings.captcha_api_key:
+        logger.warning("challenge_solve_skipped id=%s reason=no_api_key", order_id)
+        return None
+    challenge = {k: str(action.get(k) or "") for k in ("site_key", "rqdata", "verification_url")}
+    if not challenge.get("site_key"):
+        return None
+    intent_id = str(action.get("payment_intent_id") or "")
+    client_secret = str(action.get("client_secret") or "")
+    if not intent_id.startswith("pi_") or not client_secret.startswith("pi_"):
+        return None
+    client = _team_client(secrets)
+    started = time.monotonic()
+    try:
+        agent = ""
+        try:
+            agent = str(client.stripe_http.headers.get("User-Agent") or "")
+        except Exception:
+            agent = ""
+        token = await asyncio.to_thread(solve_hcaptcha, httpx.Client(timeout=40), challenge,
+                                        api_key=settings.captcha_api_key, api_url=settings.captcha_api_url,
+                                        proxy=secrets.proxy or "", user_agent=agent)
+        verified = await asyncio.to_thread(verify_challenge, client.stripe_http, intent_id=intent_id,
+                                           client_secret=client_secret, token=token,
+                                           publishable_key=secrets.publishable_key,
+                                           api_version="2026-03-25.dahlia")
+        logger.info("challenge_solved id=%s elapsed=%.1f status=%s", order_id,
+                    time.monotonic() - started, verified.get("status"))
+        result = _hosted_result({"payment_intent": verified}, secrets.checkout_session_id,
+                                view.checkout_url or "")
+        view.next_action = None if result.status.value in {"succeeded", "declined"} else result.next_action
+        return result
+    except Exception as exc:
+        logger.warning("challenge_solve_failed id=%s type=%s", order_id, type(exc).__name__)
+        return None
+    finally:
+        client.close()
+
+
 @router.post("/orders/{order_id}/team/poll", response_model=OrderOut)
 async def poll_team(order_id: str) -> OrderOut:
     async with _team_locks.setdefault(order_id, asyncio.Lock()):
@@ -436,6 +484,19 @@ async def poll_team(order_id: str) -> OrderOut:
             client.close()
         result = hosted_payment_result(payload, secrets.checkout_session_id, store.view(order_id).checkout_url or "")
         view = store.view(order_id)
+        # Complete Stripe's intent challenge here: solving is slow, so it runs during poll
+        # instead of inside the pay request where the gateway would time out.
+        logger.info("team_poll_result id=%s result=%s has_next_action=%s challenge=%s",
+                    order_id, result.status.value, bool(view.next_action),
+                    str((view.next_action or {}).get("challenge_type") or ""))
+        # Stripe's poll payload reports "processing" while the challenge is still open,
+        # so trigger on the stored challenge instead of the polled status.
+        pending = view.next_action or {}
+        if (pending.get("challenge_type") == "intent_confirmation_challenge"
+                and result.status.value not in {"succeeded", "declined"}):
+            solved = await _solve_challenge(order_id, secrets, view)
+            if solved is not None:
+                result = solved
         if result.status.value == "succeeded":
             if order.status in {OrderStatus.AWAITING_PAYMENT, OrderStatus.REQUIRES_ACTION, OrderStatus.UNKNOWN}:
                 store.update_status(order_id, OrderStatus.PAYING)

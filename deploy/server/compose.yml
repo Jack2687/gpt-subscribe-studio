@@ -15,6 +15,8 @@ services:
       GSS_USE_FAKE: "false"
       GSS_AUTH_FILE: /run/gss-auth.json
       GSS_PUBLIC_ORIGIN: ${GSS_PUBLIC_ORIGIN:-}
+      GSS_CAPTCHA_API_KEY: ${GSS_CAPTCHA_API_KEY:-}
+      GSS_CAPTCHA_API_URL: ${GSS_CAPTCHA_API_URL:-https://api.yescaptcha.com}
     volumes:
       - data:/data
       - ${GSS_PRIVATE_DIR:?set GSS_PRIVATE_DIR}/proxy-config:/config:rw

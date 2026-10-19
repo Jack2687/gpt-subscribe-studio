@@ -30,6 +30,8 @@ class Settings:
     bind_host: str = "127.0.0.1"
     bind_port: int = 8080
     enable_promo_mode: bool = False
+    captcha_api_key: str = ""
+    captcha_api_url: str = "https://api.yescaptcha.com"
     upstream_paths: Dict[str, str] = field(default_factory=dict)
     emergency_overrides: Dict[str, str] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -81,6 +83,8 @@ def load_settings(
         bind_port=int(environ.get("GSS_BIND_PORT", "8080")),
         enable_promo_mode=environ.get("GSS_ENABLE_PROMO", "").lower()
         in {"1", "true", "yes"},
+        captcha_api_key=environ.get("GSS_CAPTCHA_API_KEY", ""),
+        captcha_api_url=environ.get("GSS_CAPTCHA_API_URL", "https://api.yescaptcha.com"),
         emergency_overrides=_emergency_overrides(environ),
     )
     settings.db_path = settings.data_dir / "app.db"

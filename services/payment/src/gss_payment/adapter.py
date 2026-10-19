@@ -28,6 +28,7 @@ from gss_core.chatgpt import (
     submission_state,
     _processor_from_checkout_url,
 )
+from gss_core.config import load_settings
 from gss_core.countries import currency_for, locale_for, timezone_for
 from gss_core.proxies import align_proxy_region, configured_proxy, session_proxy
 
@@ -224,10 +225,61 @@ class UpstreamPaymentAdapter(PaymentAdapterBase):
                                    passive_captcha_token=req.passive_captcha_token or "",
                                    rv_timestamp=req.rv_timestamp or "")
         result = hosted_payment_result(confirmed, context["session_id"], req.checkout_url)
+        # Solving takes 30-120s, longer than the gateway allows. Hand the challenge
+        # back now and let the order poll endpoint complete it in the background.
+        if result.status is PaymentStatus.REQUIRES_ACTION:
+            pending = self._challenge_payload(confirmed)
+            if pending:
+                import dataclasses
+                result = dataclasses.replace(result, next_action={**(result.next_action or {}), **pending})
         if result.status is PaymentStatus.PROCESSING:
             polled = hosted.poll(session_id=context["session_id"], key=context["publishable_key"])
             result = hosted_payment_result(polled, context["session_id"], req.checkout_url)
         return result
+
+
+    @staticmethod
+    def _challenge_payload(confirmed: dict) -> dict:
+        from gss_core.captcha import challenge_from_intent
+        from gss_core.chatgpt import _intent_object
+        challenge = challenge_from_intent(_intent_object(confirmed))
+        return dict(challenge) if challenge else {}
+
+    def _solve_intent_challenge(self, client: ChatGPTClient, confirmed: dict,
+                                context: dict, req: PaymentRequest):
+        """Solve Stripe's intent_confirmation_challenge and re-read the intent."""
+        from gss_contracts import PaymentResult, PaymentStatus
+        from gss_core.captcha import challenge_from_intent, solve_hcaptcha, verify_challenge
+        from gss_core.chatgpt import _intent_object, payment_intent_from_confirm
+        intent = _intent_object(confirmed)
+        challenge = challenge_from_intent(intent)
+        if not challenge:
+            return None
+        settings = load_settings()
+        if not settings.captcha_api_key:
+            logger.warning("challenge_present captcha_key_missing challenge=stripe")
+            return None
+        intent_id, client_secret, _ = payment_intent_from_confirm(confirmed)
+        if not intent_id or not client_secret:
+            return None
+        logger.info("challenge_solving site_key_present=%s rqdata_present=%s",
+                    bool(challenge.get("site_key")), bool(challenge.get("rqdata")))
+        try:
+            token = solve_hcaptcha(client.stripe_http, challenge, api_key=settings.captcha_api_key,
+                                   api_url=settings.captcha_api_url)
+            verified = verify_challenge(client.stripe_http, intent_id=intent_id, client_secret=client_secret,
+                                        token=token, publishable_key=req.publishable_key or "",
+                                        api_version="2026-03-25.dahlia")
+        except DomainError as exc:
+            logger.warning("challenge_failed code=%s error=%s", exc.code.value,
+                           redact_sensitive(exc.message)[:200])
+            return None
+        if str(verified.get("status") or "") == "succeeded":
+            return PaymentResult(status=PaymentStatus.SUCCEEDED, provider_ref=intent_id, message="支付成功")
+        if verified.get("last_payment_error"):
+            return _result_from_intent(verified, intent_id, client_secret)
+        return PaymentResult(status=PaymentStatus.PROCESSING, provider_ref=intent_id,
+                             message="验证通过，等待 Stripe 确认扣款")
 
 
 def hosted_payment_result(payload: dict, session_id: str, checkout_url: str = ""):
@@ -248,6 +300,9 @@ def hosted_payment_result(payload: dict, session_id: str, checkout_url: str = ""
         action = dict(result.next_action or {})
         action["challenge_type"] = kind
         action["checkout_url"] = checkout_url
+        # Needed later by the poll endpoint to solve and verify the challenge.
+        action["payment_intent_id"] = intent_id
+        action["client_secret"] = secret or action.get("client_secret")
         return PaymentResult(status=PaymentStatus.REQUIRES_ACTION, provider_ref=intent_id or session_id,
                              next_action=action, message="需要完成 Stripe 验证" if kind == "intent_confirmation_challenge" else "需要完成支付验证")
     if object_status in {"failed", "canceled", "expired"} or state in {"failed", "canceled", "expired"} or status == "expired":
