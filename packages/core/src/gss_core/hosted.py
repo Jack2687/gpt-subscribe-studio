@@ -44,7 +44,9 @@ class TeamHostedClient:
         submitted = method == "POST" and path.endswith("/confirm")
         # Reads and idempotent preparation may reconnect once, using the SAME proxy and SID.
         # A lost Confirm response is ambiguous and must never be retried automatically.
-        attempts = 1 if submitted else 2
+        # TLS/connect failures mean the request never reached Stripe, so retrying is safe.
+        # A Confirm whose response was lost is ambiguous and is never retried.
+        attempts = 1 if submitted else 3
         for attempt in range(attempts):
             started = time.monotonic()
             try:
@@ -55,13 +57,19 @@ class TeamHostedClient:
                 logger.warning("hosted_transport_failed stage=%s method=%s error=%s code=%s elapsed=%.2f attempt=%s confirm_submitted=%s",
                                stage, method, type(exc).__name__, code, time.monotonic() - started, attempt + 1, submitted)
                 if not submitted and attempt + 1 < attempts:
+                    time.sleep(0.6 * (attempt + 1))
                     continue
                 if submitted:
                     raise DomainError(ErrorCode.PAYMENT_UNKNOWN_STATE,
                         "Stripe 确认支付请求中断，扣款结果待确认，请查询状态，不要重复付款") from exc
-                hint = "订单代理连接超时" if code == 28 else "订单代理或网络连接中断"
+                if code == 35 or type(exc).__name__ in {"SSLError", "ConnectionError"}:
+                    hint = "订单代理 TLS 握手失败，线路不稳定"
+                elif code == 28:
+                    hint = "订单代理连接超时"
+                else:
+                    hint = "订单代理或网络连接中断"
                 raise DomainError(ErrorCode.CHECKOUT_UPSTREAM_ERROR,
-                    f"Stripe {stage}失败：{hint}；本步骤未提交付款确认") from exc
+                    f"Stripe {stage}失败：{hint}；本步骤未提交付款确认，稍后重试本步骤即可") from exc
             logger.info("hosted_response stage=%s method=%s http=%s elapsed=%.2f attempt=%s",
                         stage, method, getattr(response, "status_code", 0),
                         time.monotonic() - started, attempt + 1)
