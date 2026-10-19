@@ -31,7 +31,7 @@ class HTTP:
         return SimpleNamespace(status_code=self.status, json=lambda: self.payload)
 
 
-def test_tokenize_sends_hosted_attribution_from_js_stripe_origin():
+def test_tokenize_uses_session_allowed_origin_and_hosted_attribution():
     http = HTTP()
     pm = tokenize_card(http, card=card(), billing=BILLING, publishable_key="pk_live_fixture",
                        checkout_session_id="cs_live_fixture", checkout_config_id="cfg_fixture",
@@ -39,7 +39,8 @@ def test_tokenize_sends_hosted_attribution_from_js_stripe_origin():
     assert pm == "pm_fixture"
     call = http.calls[0]
     assert call["url"] == "https://api.stripe.com/v1/payment_methods"
-    assert call["headers"]["Origin"] == "https://js.stripe.com"
+    # allowed_origins for this checkout session lists pay.openai.com only.
+    assert call["headers"]["Origin"] == "https://pay.openai.com"
     data = call["data"]
     assert data["card[number]"] == "4242424242424242"  # release-check: ignore
     assert data["client_attribution_metadata[merchant_integration_source]"] == "checkout"

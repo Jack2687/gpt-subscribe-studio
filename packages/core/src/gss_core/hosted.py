@@ -24,8 +24,8 @@ class TeamHostedClient:
     def __init__(self, client):
         self.client = client
         self.http = client.stripe_http
-        # Verified live: the js.stripe.com origin is accepted for hosted init/confirm.
-        self.http.headers.update({"Origin": "https://js.stripe.com", "Referer": "https://js.stripe.com/"})
+        # The checkout session's allowed_origins lists pay.openai.com only.
+        self.http.headers.update({"Origin": "https://pay.openai.com", "Referer": "https://pay.openai.com/"})
 
     @staticmethod
     def _stage(path: str) -> str:

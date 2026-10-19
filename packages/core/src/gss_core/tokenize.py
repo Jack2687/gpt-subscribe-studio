@@ -108,8 +108,9 @@ def tokenize_card(
         form["radar_options[hcaptcha_token]"] = captcha_token
 
     headers = {
-        "Origin": "https://js.stripe.com",
-        "Referer": "https://js.stripe.com/",
+        # This session's allowed_origins is pay.openai.com; the hosted page posts from there.
+        "Origin": "https://pay.openai.com",
+        "Referer": "https://pay.openai.com/",
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
     }
